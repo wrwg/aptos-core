@@ -4,7 +4,8 @@
 use crate::{
     counters,
     error::StateSyncError,
-    state_replication::{StateComputer, StateComputerCommitCallBackType, TxnManager},
+    state_replication::{StateComputer, StateComputerCommitCallBackType},
+    txn_notifier::TxnNotifier,
 };
 use anyhow::Result;
 use aptos_crypto::HashValue;
@@ -16,8 +17,11 @@ use aptos_types::{
     ledger_info::LedgerInfoWithSignatures, transaction::Transaction,
 };
 use consensus_notifications::ConsensusNotificationSender;
-use consensus_types::{block::Block, executed_block::ExecutedBlock};
-use executor_types::{BlockExecutorTrait, Error as ExecutionError, StateComputeResult};
+use consensus_types::{
+    block::Block,
+    executed_block::{ExecutedBlock, StateComputeResult},
+};
+use executor_types::{BlockExecutorTrait, Error as ExecutionError};
 use fail::fail_point;
 use futures::{SinkExt, StreamExt};
 use std::{boxed::Box, sync::Arc};
@@ -32,7 +36,7 @@ type NotificationType = (
 /// implements StateComputer traits.
 pub struct ExecutionProxy {
     executor: Box<dyn BlockExecutorTrait>,
-    mempool_notifier: Arc<dyn TxnManager>,
+    mempool_notifier: Arc<dyn TxnNotifier>,
     state_sync_notifier: Arc<dyn ConsensusNotificationSender>,
     async_state_sync_notifier: channel::Sender<NotificationType>,
     validators: Mutex<Vec<AccountAddress>>,
@@ -41,7 +45,7 @@ pub struct ExecutionProxy {
 impl ExecutionProxy {
     pub fn new(
         executor: Box<dyn BlockExecutorTrait>,
-        mempool_notifier: Arc<dyn TxnManager>,
+        mempool_notifier: Arc<dyn TxnNotifier>,
         state_sync_notifier: Arc<dyn ConsensusNotificationSender>,
         handle: &tokio::runtime::Handle,
     ) -> Self {

@@ -21,10 +21,14 @@ use aptos_infallible::RwLock;
 use aptos_logger::prelude::*;
 use aptos_types::{ledger_info::LedgerInfoWithSignatures, transaction::TransactionStatus};
 use consensus_types::{
-    block::Block, common::Round, executed_block::ExecutedBlock, quorum_cert::QuorumCert,
-    sync_info::SyncInfo, timeout_2chain::TwoChainTimeoutCertificate,
+    block::Block,
+    common::Round,
+    executed_block::{ExecutedBlock, StateComputeResult},
+    quorum_cert::QuorumCert,
+    sync_info::SyncInfo,
+    timeout_2chain::TwoChainTimeoutCertificate,
 };
-use executor_types::{Error, StateComputeResult};
+use executor_types::Error;
 use futures::executor::block_on;
 #[cfg(test)]
 use std::collections::VecDeque;

@@ -5,41 +5,29 @@ use crate::error::{MempoolError, StateSyncError};
 use anyhow::Result;
 use aptos_crypto::HashValue;
 use aptos_types::{epoch_state::EpochState, ledger_info::LedgerInfoWithSignatures};
-use consensus_types::{block::Block, common::Payload, executed_block::ExecutedBlock};
-use executor_types::{Error as ExecutionError, StateComputeResult};
+use consensus_types::{
+    block::Block,
+    common::{Payload, PayloadFilter},
+    executed_block::{ExecutedBlock, StateComputeResult},
+};
+use executor_types::Error as ExecutionError;
 use futures::future::BoxFuture;
 use std::sync::Arc;
 
 pub type StateComputerCommitCallBackType =
     Box<dyn FnOnce(&[Arc<ExecutedBlock>], LedgerInfoWithSignatures) + Send + Sync>;
 
-/// Retrieves and updates the status of transactions on demand (e.g., via talking with Mempool)
 #[async_trait::async_trait]
-pub trait TxnManager: Send + Sync {
-    /// Brings new transactions to be applied.
-    /// The `exclude_txns` list includes the transactions that are already pending in the
-    /// branch of blocks consensus is trying to extend.
-    ///
-    /// wait_callback is executed when there's no transactions available and it decides to wait.
-    /// pending_ordering indicates if we should long poll mempool or propose empty blocks to help commit pending txns
-    async fn pull_txns(
+pub trait PayloadManager: Send + Sync {
+    async fn pull_payload(
         &self,
         max_size: u64,
-        exclude: Vec<&Payload>,
+        exclude: PayloadFilter,
         wait_callback: BoxFuture<'static, ()>,
         pending_ordering: bool,
     ) -> Result<Payload, MempoolError>;
 
-    /// Notifies TxnManager about the txns which failed execution. (Committed txns is notified by
-    /// state sync.)
-    async fn notify_failed_txn(
-        &self,
-        block: &Block,
-        compute_result: &StateComputeResult,
-    ) -> Result<(), MempoolError>;
-
-    /// Helper to trace transactions after block is generated
-    fn trace_transactions(&self, _block: &Block) {}
+    fn trace_payloads(&self) {}
 }
 
 /// While Consensus is managing proposed blocks, `StateComputer` is managing the results of the

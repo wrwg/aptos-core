@@ -3,7 +3,7 @@
 
 #![forbid(unsafe_code)]
 
-use crate::{ExecutedTrees, StateComputeResult, TransactionData};
+use crate::{ExecutedTrees, TransactionData};
 use anyhow::{bail, ensure, Result};
 use aptos_crypto::hash::{CryptoHash, TransactionAccumulatorHasher};
 use aptos_types::{
@@ -13,6 +13,7 @@ use aptos_types::{
     proof::accumulator::InMemoryAccumulator,
     transaction::{Transaction, TransactionInfo, TransactionStatus, TransactionToCommit},
 };
+use consensus_types::executed_block::StateComputeResult;
 use std::sync::Arc;
 
 #[derive(Default)]

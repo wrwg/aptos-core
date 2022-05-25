@@ -14,6 +14,7 @@ use aptos_data_client::aptosnet::AptosNetDataClient;
 use aptos_infallible::RwLock;
 use aptos_logger::{prelude::*, Logger};
 use aptos_metrics::{get_public_json_metrics, metric_server};
+use aptos_quorom_store::pass_through_quorum_store;
 use aptos_state_view::account_with_state_view::AsAccountWithStateView;
 use aptos_telemetry::{
     constants::{
@@ -79,6 +80,7 @@ pub struct AptosHandle {
     _consensus_runtime: Option<Runtime>,
     _debug: NodeDebugService,
     _mempool: Runtime,
+    _quorum_store: Runtime,
     _network_runtimes: Vec<Runtime>,
     _state_sync_runtimes: StateSyncRuntimes,
     _telemetry_runtime: Runtime,
@@ -167,7 +169,7 @@ pub fn load_test_environment<R>(
             .parse()
             .unwrap();
         if lazy {
-            template.consensus.mempool_poll_count = u64::MAX;
+            template.consensus.quorum_store_poll_count = u64::MAX;
         }
 
         let builder = aptos_genesis_tool::validator_builder::ValidatorBuilder::new(
@@ -664,7 +666,12 @@ pub fn setup_environment(node_config: &NodeConfig, logger: Option<Arc<Logger>>) 
     let api_runtime = bootstrap_api(node_config, chain_id, aptos_db, mp_client_sender).unwrap();
 
     let mut consensus_runtime = None;
-    let (consensus_to_mempool_sender, consensus_requests) = channel(INTRA_NODE_CHANNEL_BUFFER_SIZE);
+    let (quorum_store_to_mempool_sender, quorum_store_to_mempool_receiver) =
+        channel(INTRA_NODE_CHANNEL_BUFFER_SIZE);
+    let (executor_to_mempool_sender, executor_to_mempool_receiver) =
+        channel(INTRA_NODE_CHANNEL_BUFFER_SIZE);
+    let (consensus_to_quorum_store_sender, consensus_to_quorum_store_receiver) =
+        channel(INTRA_NODE_CHANNEL_BUFFER_SIZE);
 
     instant = Instant::now();
     let mempool = aptos_mempool::bootstrap(
@@ -672,12 +679,32 @@ pub fn setup_environment(node_config: &NodeConfig, logger: Option<Arc<Logger>>) 
         Arc::clone(&db_rw.reader),
         mempool_network_handles,
         mp_client_events,
-        consensus_requests,
+        quorum_store_to_mempool_receiver,
+        executor_to_mempool_receiver,
         mempool_listener,
         mempool_reconfig_subscription,
         peer_metadata_storage.clone(),
     );
     debug!("Mempool started in {} ms", instant.elapsed().as_millis());
+
+    assert!(
+        !node_config.quorum_store.use_quorum_store,
+        "QuorumStore is not yet implemented"
+    );
+    assert_ne!(
+        node_config.quorum_store.use_quorum_store,
+        node_config.mempool.shared_mempool_validator_broadcast,
+        "Shared mempool validator broadcast must be turned off when QuorumStore is on, and vice versa"
+    );
+    let quorum_store = pass_through_quorum_store::bootstrap(
+        node_config,
+        consensus_to_quorum_store_receiver,
+        quorum_store_to_mempool_sender,
+    );
+    debug!(
+        "QuorumStore started in {} ms",
+        instant.elapsed().as_millis()
+    );
 
     // StateSync should be instantiated and started before Consensus to avoid a cyclic dependency:
     // network provider -> consensus -> state synchronizer -> network provider.  This has resulted
@@ -698,7 +725,8 @@ pub fn setup_environment(node_config: &NodeConfig, logger: Option<Arc<Logger>>) 
             consensus_network_sender,
             consensus_network_events,
             Arc::new(consensus_notifier),
-            consensus_to_mempool_sender,
+            executor_to_mempool_sender,
+            consensus_to_quorum_store_sender,
             db_rw.clone(),
             consensus_reconfig_subscription
                 .expect("Consensus requires a reconfiguration subscription!"),
@@ -729,6 +757,7 @@ pub fn setup_environment(node_config: &NodeConfig, logger: Option<Arc<Logger>>) 
         _consensus_runtime: consensus_runtime,
         _debug: debug_if,
         _mempool: mempool,
+        _quorum_store: quorum_store,
         _network_runtimes: network_runtimes,
         _state_sync_runtimes: state_sync_runtimes,
         _telemetry_runtime: telemery_runtime,

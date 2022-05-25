@@ -23,6 +23,7 @@ aptos-types = { path = "../../types", features = ["fuzzing"] }
 aptos-vm = { path = "../../aptos-move/aptos-vm" }
 aptos-workspace-hack = { path = "../../crates/aptos-workspace-hack" }
 aptosdb = { path = "../../storage/aptosdb", features = ["fuzzing"] }
+consensus-types = { path = "../../consensus/consensus-types" }
 executor = { path = "../executor" }
 executor-types = { path = "../executor-types" }
 move-deps = { path = "../../aptos-move/move-deps", features = ["address32"] }

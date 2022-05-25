@@ -19,8 +19,8 @@ use aptos_types::{
 };
 use aptos_vm::{AptosVM, VMExecutor};
 use aptosdb::AptosDB;
+use consensus_types::executed_block::StateComputeResult;
 use executor::db_bootstrapper::{generate_waypoint, maybe_bootstrap};
-use executor_types::StateComputeResult;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     thread::JoinHandle,

@@ -13,8 +13,11 @@ use anyhow::Result;
 use aptos_crypto::HashValue;
 use aptos_logger::prelude::*;
 use aptos_types::{epoch_state::EpochState, ledger_info::LedgerInfoWithSignatures};
-use consensus_types::{block::Block, executed_block::ExecutedBlock};
-use executor_types::{Error as ExecutionError, StateComputeResult};
+use consensus_types::{
+    block::Block,
+    executed_block::{ExecutedBlock, StateComputeResult},
+};
+use executor_types::Error as ExecutionError;
 use fail::fail_point;
 use futures::{
     channel::{mpsc::UnboundedSender, oneshot},

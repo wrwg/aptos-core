@@ -617,6 +617,7 @@ dependencies = [
  "bcs",
  "bounded-executor",
  "channel",
+ "consensus-types",
  "enum_dispatch",
  "event-notifications",
  "fail 0.5.0",
@@ -680,6 +681,7 @@ dependencies = [
  "aptos-logger",
  "aptos-mempool",
  "aptos-metrics",
+ "aptos-quorom-store",
  "aptos-secure-storage",
  "aptos-state-view",
  "aptos-telemetry",
@@ -783,6 +785,29 @@ dependencies = [
  "crossbeam",
  "proptest",
  "proptest-derive",
+]
+
+[[package]]
+name = "aptos-quorom-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aptos-config",
+ "aptos-crypto",
+ "aptos-crypto-derive",
+ "aptos-infallible",
+ "aptos-logger",
+ "aptos-mempool",
+ "aptos-metrics",
+ "aptos-types",
+ "aptos-workspace-hack",
+ "bcs",
+ "consensus-types",
+ "futures",
+ "network",
+ "serde 1.0.137",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
@@ -1957,6 +1982,7 @@ dependencies = [
  "aptos-logger",
  "aptos-mempool",
  "aptos-metrics",
+ "aptos-quorom-store",
  "aptos-secure-storage",
  "aptos-temppath",
  "aptos-types",
@@ -2022,10 +2048,11 @@ dependencies = [
  "aptos-crypto",
  "aptos-crypto-derive",
  "aptos-infallible",
+ "aptos-state-view",
  "aptos-types",
  "aptos-workspace-hack",
  "bcs",
- "executor-types",
+ "futures",
  "itertools",
  "mirai-annotations",
  "proptest",
@@ -2931,6 +2958,7 @@ dependencies = [
  "aptos-vm",
  "aptos-workspace-hack",
  "aptosdb",
+ "consensus-types",
  "executor",
  "executor-types",
  "move-deps",
@@ -2951,6 +2979,7 @@ dependencies = [
  "aptos-types",
  "aptos-workspace-hack",
  "bcs",
+ "consensus-types",
  "itertools",
  "scratchpad",
  "serde 1.0.137",

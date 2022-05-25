@@ -96,8 +96,7 @@ BlockType:
       Proposal:
         STRUCT:
           - payload:
-              SEQ:
-                TYPENAME: SignedTransaction
+              TYPENAME: Payload
           - author:
               TYPENAME: AccountAddress
     1:
@@ -242,6 +241,26 @@ MultiEd25519PublicKey:
   NEWTYPESTRUCT: BYTES
 MultiEd25519Signature:
   NEWTYPESTRUCT: BYTES
+Payload:
+  ENUM:
+    0:
+      InMemory:
+        NEWTYPE:
+          SEQ:
+            TYPENAME: SignedTransaction
+    1:
+      InTestQuorumStore:
+        NEWTYPE:
+          SEQ:
+            TYPENAME: TestProofOfStore
+    2:
+      InQuorumStore:
+        NEWTYPE:
+          SEQ:
+            TYPENAME: ProofOfStore
+ProofOfStore:
+  STRUCT:
+    - digest: U64
 ProposalMsg:
   STRUCT:
     - proposal:
@@ -330,6 +349,12 @@ SyncInfo:
     - highest_2chain_timeout_cert:
         OPTION:
           TYPENAME: TwoChainTimeoutCertificate
+TestProofOfStore:
+  STRUCT:
+    - digest: U64
+    - txns:
+        SEQ:
+          TYPENAME: SignedTransaction
 Transaction:
   ENUM:
     0:

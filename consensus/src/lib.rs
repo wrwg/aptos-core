@@ -24,6 +24,7 @@ mod metrics_safety_rules;
 mod network;
 #[cfg(test)]
 mod network_tests;
+mod payload_manager;
 mod pending_votes;
 mod persistent_liveness_storage;
 mod round_manager;
@@ -33,7 +34,7 @@ mod state_replication;
 mod test_utils;
 #[cfg(test)]
 mod twins;
-mod txn_manager;
+mod txn_notifier;
 mod util;
 
 /// AptosBFT implementation

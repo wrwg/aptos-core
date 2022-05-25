@@ -1,7 +1,10 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::shared_mempool::types::{BatchId, ConsensusRequest};
+use crate::{
+    shared_mempool::types::{BatchId, QuorumStoreRequest},
+    TxnNotificationRequest,
+};
 use anyhow::Error;
 use aptos_config::network_id::{NetworkId, PeerNetworkId};
 use aptos_logger::Schema;
@@ -81,7 +84,9 @@ pub struct LogSchema<'a> {
     txns: Option<TxnsLog>,
     account: Option<AccountAddress>,
     #[schema(display)]
-    consensus_msg: Option<&'a ConsensusRequest>,
+    quorum_store_msg: Option<&'a QuorumStoreRequest>,
+    #[schema(display)]
+    txn_notification_msg: Option<&'a TxnNotificationRequest>,
     #[schema(display)]
     state_sync_msg: Option<&'a MempoolCommitNotification>,
     network_level: Option<usize>,
@@ -110,7 +115,8 @@ impl<'a> LogSchema<'a> {
             reconfig_update: None,
             account: None,
             txns: None,
-            consensus_msg: None,
+            quorum_store_msg: None,
+            txn_notification_msg: None,
             state_sync_msg: None,
             network_level: None,
             upstream_network: None,
@@ -131,7 +137,8 @@ pub enum LogEntry {
     JsonRpc,
     GetTransaction,
     GetBlock,
-    Consensus,
+    QuorumStore,
+    TxnNotification,
     StateSyncCommit,
     BroadcastTransaction,
     BroadcastACK,

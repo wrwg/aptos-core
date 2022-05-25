@@ -76,6 +76,7 @@ members = [
     "network/discovery",
     "network/memsocket",
     "network/netcore",
+    "quorom-store",
     "sdk",
     "sdk/transaction-builder",
     "secure/net",

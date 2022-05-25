@@ -7,15 +7,24 @@ use crate::{
     quorum_cert::QuorumCert,
     vote_proposal::{MaybeSignedVoteProposal, VoteProposal},
 };
-use aptos_crypto::hash::HashValue;
+use aptos_crypto::{
+    ed25519::Ed25519Signature,
+    hash::{TransactionAccumulatorHasher, ACCUMULATOR_PLACEHOLDER_HASH},
+    HashValue,
+};
 use aptos_types::{
     account_address::AccountAddress,
     block_info::BlockInfo,
     contract_event::ContractEvent,
-    transaction::{Transaction, TransactionStatus},
+    epoch_state::EpochState,
+    proof::AccumulatorExtensionProof,
+    transaction::{Transaction, TransactionStatus, Version},
 };
-use executor_types::StateComputeResult;
-use std::fmt::{Debug, Display, Formatter};
+use serde::{Deserialize, Serialize};
+use std::{
+    cmp::max,
+    fmt::{Debug, Display, Formatter},
+};
 
 /// ExecutedBlocks are managed in a speculative tree, the committed blocks form a chain. Besides
 /// block data, each executed block also has other derived meta data which could be regenerated from
@@ -135,5 +144,164 @@ impl ExecutedBlock {
     pub fn is_reconfiguration_suffix(&self) -> bool {
         self.state_compute_result.has_reconfiguration()
             && self.state_compute_result.compute_status().is_empty()
+    }
+}
+
+/// A structure that summarizes the result of the execution needed for consensus to agree on.
+/// The execution is responsible for generating the ID of the new state, which is returned in the
+/// result.
+///
+/// Not every transaction in the payload succeeds: the returned vector keeps the boolean status
+/// of success / failure of the transactions.
+/// Note that the specific details of compute_status are opaque to StateMachineReplication,
+/// which is going to simply pass the results between StateComputer and TxnManager.
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+pub struct StateComputeResult {
+    /// transaction accumulator root hash is identified as `state_id` in Consensus.
+    root_hash: HashValue,
+    /// Represents the roots of all the full subtrees from left to right in this accumulator
+    /// after the execution. For details, please see [`InMemoryAccumulator`](aptos_types::proof::accumulator::InMemoryAccumulator).
+    frozen_subtree_roots: Vec<HashValue>,
+
+    /// The frozen subtrees roots of the parent block,
+    parent_frozen_subtree_roots: Vec<HashValue>,
+
+    /// The number of leaves of the transaction accumulator after executing a proposed block.
+    /// This state must be persisted to ensure that on restart that the version is calculated correctly.
+    num_leaves: u64,
+
+    /// The number of leaves after executing the parent block,
+    parent_num_leaves: u64,
+
+    /// If set, this is the new epoch info that should be changed to if this block is committed.
+    epoch_state: Option<EpochState>,
+    /// The compute status (success/failure) of the given payload. The specific details are opaque
+    /// for StateMachineReplication, which is merely passing it between StateComputer and
+    /// TxnManager.
+    compute_status: Vec<TransactionStatus>,
+
+    /// The transaction info hashes of all success txns.
+    transaction_info_hashes: Vec<HashValue>,
+
+    /// The signature of the VoteProposal corresponding to this block.
+    signature: Option<Ed25519Signature>,
+
+    reconfig_events: Vec<ContractEvent>,
+}
+
+impl StateComputeResult {
+    pub fn new(
+        root_hash: HashValue,
+        frozen_subtree_roots: Vec<HashValue>,
+        num_leaves: u64,
+        parent_frozen_subtree_roots: Vec<HashValue>,
+        parent_num_leaves: u64,
+        epoch_state: Option<EpochState>,
+        compute_status: Vec<TransactionStatus>,
+        transaction_info_hashes: Vec<HashValue>,
+        reconfig_events: Vec<ContractEvent>,
+    ) -> Self {
+        Self {
+            root_hash,
+            frozen_subtree_roots,
+            num_leaves,
+            parent_frozen_subtree_roots,
+            parent_num_leaves,
+            epoch_state,
+            compute_status,
+            transaction_info_hashes,
+            reconfig_events,
+            signature: None,
+        }
+    }
+
+    /// generate a new dummy state compute result with a given root hash.
+    /// this function is used in RandomComputeResultStateComputer to assert that the compute
+    /// function is really called.
+    pub fn new_dummy_with_root_hash(root_hash: HashValue) -> Self {
+        Self {
+            root_hash,
+            frozen_subtree_roots: vec![],
+            num_leaves: 0,
+            parent_frozen_subtree_roots: vec![],
+            parent_num_leaves: 0,
+            epoch_state: None,
+            compute_status: vec![],
+            transaction_info_hashes: vec![],
+            reconfig_events: vec![],
+            signature: None,
+        }
+    }
+
+    /// generate a new dummy state compute result with ACCUMULATOR_PLACEHOLDER_HASH as the root hash.
+    /// this function is used in ordering_state_computer as a dummy state compute result,
+    /// where the real compute result is generated after ordering_state_computer.commit pushes
+    /// the blocks and the finality proof to the execution phase.
+    pub fn new_dummy() -> Self {
+        StateComputeResult::new_dummy_with_root_hash(*ACCUMULATOR_PLACEHOLDER_HASH)
+    }
+}
+
+impl StateComputeResult {
+    pub fn version(&self) -> Version {
+        max(self.num_leaves, 1)
+            .checked_sub(1)
+            .expect("Integer overflow occurred")
+    }
+
+    pub fn root_hash(&self) -> HashValue {
+        self.root_hash
+    }
+
+    pub fn compute_status(&self) -> &Vec<TransactionStatus> {
+        &self.compute_status
+    }
+
+    pub fn epoch_state(&self) -> &Option<EpochState> {
+        &self.epoch_state
+    }
+
+    pub fn extension_proof(&self) -> AccumulatorExtensionProof<TransactionAccumulatorHasher> {
+        AccumulatorExtensionProof::<TransactionAccumulatorHasher>::new(
+            self.parent_frozen_subtree_roots.clone(),
+            self.parent_num_leaves(),
+            self.transaction_info_hashes().clone(),
+        )
+    }
+
+    pub fn transaction_info_hashes(&self) -> &Vec<HashValue> {
+        &self.transaction_info_hashes
+    }
+
+    pub fn num_leaves(&self) -> u64 {
+        self.num_leaves
+    }
+
+    pub fn frozen_subtree_roots(&self) -> &Vec<HashValue> {
+        &self.frozen_subtree_roots
+    }
+
+    pub fn parent_num_leaves(&self) -> u64 {
+        self.parent_num_leaves
+    }
+
+    pub fn parent_frozen_subtree_roots(&self) -> &Vec<HashValue> {
+        &self.parent_frozen_subtree_roots
+    }
+
+    pub fn has_reconfiguration(&self) -> bool {
+        self.epoch_state.is_some()
+    }
+
+    pub fn reconfig_events(&self) -> &[ContractEvent] {
+        &self.reconfig_events
+    }
+
+    pub fn signature(&self) -> &Option<Ed25519Signature> {
+        &self.signature
+    }
+
+    pub fn set_signature(&mut self, sig: Ed25519Signature) {
+        self.signature = Some(sig);
     }
 }

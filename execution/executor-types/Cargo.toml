@@ -21,6 +21,7 @@ aptos-secure-net = { path = "../../secure/net" }
 aptos-state-view = { path = "../../storage/state-view" }
 aptos-types = { path = "../../types" }
 aptos-workspace-hack = { path = "../../crates/aptos-workspace-hack" }
+consensus-types = { path = "../../consensus/consensus-types" }
 scratchpad = { path = "../../storage/scratchpad" }
 storage-interface = { path = "../../storage/storage-interface" }
 

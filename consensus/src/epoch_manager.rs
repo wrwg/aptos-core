@@ -24,7 +24,7 @@ use crate::{
     network_interface::{ConsensusMsg, ConsensusNetworkSender},
     persistent_liveness_storage::{LedgerRecoveryData, PersistentLivenessStorage, RecoveryData},
     round_manager::{RoundManager, UnverifiedEvent, VerifiedEvent},
-    state_replication::{StateComputer, TxnManager},
+    state_replication::{PayloadManager, StateComputer},
     util::time_service::TimeService,
 };
 use anyhow::{bail, ensure, Context};
@@ -85,7 +85,7 @@ pub struct EpochManager {
     self_sender: channel::Sender<Event<ConsensusMsg>>,
     network_sender: ConsensusNetworkSender,
     timeout_sender: channel::Sender<Round>,
-    txn_manager: Arc<dyn TxnManager>,
+    payload_manager: Arc<dyn PayloadManager>,
     commit_state_computer: Arc<dyn StateComputer>,
     storage: Arc<dyn PersistentLivenessStorage>,
     safety_rules_manager: SafetyRulesManager,
@@ -107,7 +107,7 @@ impl EpochManager {
         self_sender: channel::Sender<Event<ConsensusMsg>>,
         network_sender: ConsensusNetworkSender,
         timeout_sender: channel::Sender<Round>,
-        txn_manager: Arc<dyn TxnManager>,
+        payload_manager: Arc<dyn PayloadManager>,
         commit_state_computer: Arc<dyn StateComputer>,
         storage: Arc<dyn PersistentLivenessStorage>,
         reconfig_events: ReconfigNotificationListener,
@@ -123,7 +123,7 @@ impl EpochManager {
             self_sender,
             network_sender,
             timeout_sender,
-            txn_manager,
+            payload_manager,
             commit_state_computer,
             storage,
             safety_rules_manager,
@@ -445,7 +445,7 @@ impl EpochManager {
         let proposal_generator = ProposalGenerator::new(
             self.author,
             block_store.clone(),
-            self.txn_manager.clone(),
+            self.payload_manager.clone(),
             self.time_service.clone(),
             self.config.max_block_size,
         );

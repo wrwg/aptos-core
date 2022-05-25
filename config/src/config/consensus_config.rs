@@ -15,7 +15,7 @@ pub struct ConsensusConfig {
     // Timeout for consensus to get an ack from mempool for executed transactions (in milliseconds)
     pub mempool_executed_txn_timeout_ms: u64,
     // Timeout for consensus to pull transactions from mempool and get a response (in milliseconds)
-    pub mempool_txn_pull_timeout_ms: u64,
+    pub quorum_store_pull_timeout_ms: u64,
     pub round_initial_timeout_ms: u64,
     pub proposer_type: ConsensusProposerType,
     pub safety_rules: SafetyRulesConfig,
@@ -24,7 +24,7 @@ pub struct ConsensusConfig {
     pub sync_only: bool,
     // Decides how long the leader waits before proposing empty block if there's no txns in mempool
     // the period = (poll_count - 1) * 30ms
-    pub mempool_poll_count: u64,
+    pub quorum_store_poll_count: u64,
     pub channel_size: usize,
 }
 
@@ -34,7 +34,7 @@ impl Default for ConsensusConfig {
             contiguous_rounds: 2,
             max_block_size: 3000,
             max_pruned_blocks_in_mem: 100,
-            mempool_txn_pull_timeout_ms: 1000,
+            quorum_store_pull_timeout_ms: 1000,
             mempool_executed_txn_timeout_ms: 1000,
             round_initial_timeout_ms: 1000,
             proposer_type: ConsensusProposerType::LeaderReputation(LeaderReputationConfig {
@@ -43,7 +43,7 @@ impl Default for ConsensusConfig {
             }),
             safety_rules: SafetyRulesConfig::default(),
             sync_only: false,
-            mempool_poll_count: 20,
+            quorum_store_poll_count: 20,
             channel_size: 30, // hard-coded
         }
     }

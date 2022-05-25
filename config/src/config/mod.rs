@@ -28,6 +28,8 @@ mod logger_config;
 pub use logger_config::*;
 mod mempool_config;
 pub use mempool_config::*;
+mod quorum_store_config;
+pub use quorum_store_config::*;
 mod network_config;
 pub use network_config::*;
 mod secure_backend_config;
@@ -70,6 +72,8 @@ pub struct NodeConfig {
     pub logger: LoggerConfig,
     #[serde(default)]
     pub mempool: MempoolConfig,
+    #[serde(default)]
+    pub quorum_store: QuorumStoreConfig,
     #[serde(default)]
     pub metrics: DeprecatedConfig,
     #[serde(default)]

@@ -1,0 +1,31 @@
+[package]
+name = "aptos-quorom-store"
+version = "0.1.0"
+authors = ["Aptos Labs <opensource@aptoslabs.com>"]
+description = "Aptos quorom-store for disseminating blocks and getting proofs of availaiblity"
+repository = "https://github.com/aptos-labs/aptos-core"
+homepage = "https://aptoslabs.com"
+license = "Apache-2.0"
+publish = false
+edition = "2018"
+
+[dependencies]
+anyhow = "1.0.52"
+futures = "0.3.12"
+serde = { version = "1.0.124", default-features = false }
+tokio = { version = "1.8.1", features = ["full"] }
+tokio-stream = "0.1.4"
+
+aptos-config = { path = "../config" }
+aptos-crypto = { path = "../crates/aptos-crypto" }
+aptos-crypto-derive = { path = "../crates/aptos-crypto-derive" }
+aptos-infallible = { path = "../crates/aptos-infallible" }
+aptos-logger = { path = "../crates/aptos-logger" }
+aptos-mempool = { path = "../mempool" }
+aptos-metrics = { path = "../crates/aptos-metrics" }
+aptos-types = { path = "../types" }
+bcs = "0.1.2"
+consensus-types = { path = "../consensus/consensus-types" }
+network = { path = "../network" }
+
+aptos-workspace-hack = { version = "0.1", path = "../crates/aptos-workspace-hack" }

@@ -10,7 +10,8 @@ use aptos_logger::prelude::*;
 use aptos_state_view::StateViewId;
 use aptos_types::{ledger_info::LedgerInfoWithSignatures, transaction::Transaction};
 use aptos_vm::VMExecutor;
-use executor_types::{BlockExecutorTrait, Error, StateComputeResult};
+use consensus_types::executed_block::StateComputeResult;
+use executor_types::{BlockExecutorTrait, Error};
 use fail::fail_point;
 use std::marker::PhantomData;
 
