@@ -148,7 +148,7 @@ impl ProposalGenerator {
                     pending_ordering,
                 )
                 .await
-                .context("Fail to retrieve txn")?;
+                .context("Fail to retrieve payload")?;
 
             (payload, timestamp.as_micros() as u64)
         };

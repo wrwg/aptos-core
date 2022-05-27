@@ -3,3 +3,5 @@
 
 pub mod pass_through_quorum_store;
 pub mod test_quorum_store;
+
+mod counters;
