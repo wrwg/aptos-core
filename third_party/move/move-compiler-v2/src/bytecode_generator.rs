@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 // ======================================================================================
 // Entry
 
-/// Generate code for the given function from it's AST representation in the env.
+/// Generate code for the given function from its AST representation in the env.
 /// This returns `FunctionData` suitable for the bytecode processing pipeline.
 pub fn generate_bytecode(env: &GlobalEnv, fid: QualifiedId<FunId>) -> FunctionData {
     let func_env = env.get_function(fid);
@@ -44,7 +44,7 @@ pub fn generate_bytecode(env: &GlobalEnv, fid: QualifiedId<FunId>) -> FunctionDa
     gen.scopes.push_back(scope);
     if let Some(def) = gen.func_env.get_def().cloned() {
         // Need to clone expression if present because of sharing issues with `gen`. However, because
-        // of internalization, clone is cheap.
+        // of interning, clone is cheap.
         gen.gen(results.clone(), &def);
         gen.emit_with(def.node_id(), |attr| Bytecode::Ret(attr, results))
     }
