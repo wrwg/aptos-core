@@ -81,7 +81,7 @@ module aptos_std::table {
         contains_box<K, V, Box<V>>(table, key)
     }
 
-    #[test_only]
+    /* #[test_only] */
     /// Testing only: allows to drop a table even if it is not empty.
     public fun drop_unchecked<K: copy + drop, V>(table: Table<K, V>) {
         drop_unchecked_box<K, V, Box<V>>(table)

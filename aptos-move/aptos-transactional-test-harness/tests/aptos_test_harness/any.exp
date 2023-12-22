@@ -1,0 +1,29 @@
+processed 3 tasks
+
+task 1 'print-bytecode'. lines 4-140:
+Error: error[E04001]: restricted visibility
+   ┌─ TEMPFILE:29:9
+   │
+29 │         table::destroy(inner)
+   │         ^^^^^^^^^^^^^^^^^^^^^ Invalid call to '(aptos_std=0x1)::table::destroy'
+   │
+   ┌─ /Users/wrwg/aptos-core/aptos-move/framework/aptos-stdlib/sources/table.move:90:5
+   │
+90 │     public(friend) fun destroy<K: copy + drop, V>(table: Table<K, V>) {
+   │     -------------- This function can only be called from a 'friend' of module '(aptos_std=0x1)::table'
+
+
+
+task 2 'publish'. lines 143-279:
+Error: error[E04001]: restricted visibility
+    ┌─ TEMPFILE:168:9
+    │
+168 │         table::destroy(inner)
+    │         ^^^^^^^^^^^^^^^^^^^^^ Invalid call to '(aptos_std=0x1)::table::destroy'
+    │
+    ┌─ /Users/wrwg/aptos-core/aptos-move/framework/aptos-stdlib/sources/table.move:90:5
+    │
+ 90 │     public(friend) fun destroy<K: copy + drop, V>(table: Table<K, V>) {
+    │     -------------- This function can only be called from a 'friend' of module '(aptos_std=0x1)::table'
+
+

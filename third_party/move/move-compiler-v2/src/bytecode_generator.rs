@@ -1053,20 +1053,8 @@ impl<'env> Generator<'env> {
         let struct_env = self.env().get_struct(str.to_qualified_id());
         let field_offset = struct_env.get_field(field).get_offset();
 
-        let oper_temp = if matches!(
-            oper.as_ref(),
-            ExpData::LocalVar(..)
-                | ExpData::Temporary(..)
-                | ExpData::Call(_, Operation::Select(..), _)
-        ) {
-            // For inner select or identifier, compile operand in reference mode, defaulting
-            // to immutable mode.
-            self.gen_auto_ref_arg(oper, ReferenceKind::Immutable)
-        } else {
-            // Otherwise compile the operand outside of reference mode. Note that we may be already in
-            // reference mode, so we have to deactivate this temporarily.
-            self.without_reference_mode(|s| s.gen_arg(oper, false))
-        };
+        // Compile operand in reference mode, defaulting to immutable mode.
+        let oper_temp = self.gen_auto_ref_arg(oper, ReferenceKind::Immutable);
 
         // If we are in reference mode and a &mut is requested, the operand also needs to be
         // &mut.

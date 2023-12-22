@@ -1,0 +1,85 @@
+processed 2 tasks
+
+task 0 'print-bytecode'. lines 1-40:
+// Move bytecode v7
+module 42.simple_map {
+struct Element<Ty0, Ty1> has copy, drop, store {
+	key: Ty0,
+	value: Ty1
+}
+struct SimpleMap<Ty0, Ty1> has copy, drop, store {
+	data: vector<Element<Ty0, Ty1>>
+}
+
+public keys<Ty0: copy, Ty1>(Arg0: &SimpleMap<Ty0, Ty1>): vector<Ty0> {
+L0:	loc1: vector<Ty0>
+L1:	loc2: &vector<Element<Ty0, Ty1>>
+L2:	loc3: u64
+L3:	loc4: &vector<Element<Ty0, Ty1>>
+L4:	loc5: u64
+L5:	loc6: &vector<Element<Ty0, Ty1>>
+L6:	loc7: &Element<Ty0, Ty1>
+L7:	loc8: &Element<Ty0, Ty1>
+L8:	loc9: &Element<Ty0, Ty1>
+L9:	loc10: u64
+L10:	loc11: vector<Ty0>
+B0:
+	0: CopyLoc[0](Arg0: &SimpleMap<Ty0, Ty1>)
+	1: ImmBorrowFieldGeneric[0](SimpleMap.data: vector<Element<Ty0, Ty1>>)
+	2: StLoc[1](loc0: &vector<Element<Ty0, Ty1>>)
+	3: VecPack(3, 0)
+	4: StLoc[2](loc1: vector<Ty0>)
+	5: MoveLoc[1](loc0: &vector<Element<Ty0, Ty1>>)
+	6: StLoc[3](loc2: &vector<Element<Ty0, Ty1>>)
+	7: LdU64(0)
+	8: StLoc[4](loc3: u64)
+	9: CopyLoc[3](loc2: &vector<Element<Ty0, Ty1>>)
+	10: StLoc[5](loc4: &vector<Element<Ty0, Ty1>>)
+	11: MoveLoc[5](loc4: &vector<Element<Ty0, Ty1>>)
+	12: VecLen(4)
+	13: StLoc[6](loc5: u64)
+B1:
+	14: CopyLoc[4](loc3: u64)
+	15: CopyLoc[6](loc5: u64)
+	16: Lt
+	17: BrFalse(42)
+B2:
+	18: CopyLoc[3](loc2: &vector<Element<Ty0, Ty1>>)
+	19: StLoc[7](loc6: &vector<Element<Ty0, Ty1>>)
+	20: MoveLoc[7](loc6: &vector<Element<Ty0, Ty1>>)
+	21: CopyLoc[4](loc3: u64)
+	22: VecImmBorrow(4)
+	23: StLoc[8](loc7: &Element<Ty0, Ty1>)
+	24: MutBorrowLoc[2](loc1: vector<Ty0>)
+	25: MoveLoc[8](loc7: &Element<Ty0, Ty1>)
+	26: StLoc[9](loc8: &Element<Ty0, Ty1>)
+	27: MoveLoc[9](loc8: &Element<Ty0, Ty1>)
+	28: StLoc[10](loc9: &Element<Ty0, Ty1>)
+	29: CopyLoc[10](loc9: &Element<Ty0, Ty1>)
+	30: ImmBorrowFieldGeneric[1](Element.key: Ty0)
+	31: ReadRef
+	32: MoveLoc[10](loc9: &Element<Ty0, Ty1>)
+	33: Pop
+	34: VecPushBack(3)
+	35: LdU64(1)
+	36: StLoc[11](loc10: u64)
+	37: MoveLoc[4](loc3: u64)
+	38: MoveLoc[11](loc10: u64)
+	39: Add
+	40: StLoc[4](loc3: u64)
+	41: Branch(47)
+B3:
+	42: MoveLoc[0](Arg0: &SimpleMap<Ty0, Ty1>)
+	43: Pop
+	44: MoveLoc[3](loc2: &vector<Element<Ty0, Ty1>>)
+	45: Pop
+	46: Branch(48)
+B4:
+	47: Branch(14)
+B5:
+	48: MoveLoc[2](loc1: vector<Ty0>)
+	49: StLoc[12](loc11: vector<Ty0>)
+	50: MoveLoc[12](loc11: vector<Ty0>)
+	51: Ret
+}
+}

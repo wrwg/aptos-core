@@ -224,13 +224,6 @@ impl<'a> FunctionGenerator<'a> {
     fn gen_bytecode(&mut self, ctx: &BytecodeContext, bc: &Bytecode, next_bc: Option<&Bytecode>) {
         match bc {
             Bytecode::Assign(_, dest, source, mode) => {
-                if !self.stack.is_empty() && *mode == AssignKind::Copy {
-                    // If this assign is a copy, flush the top element of the abstract stack
-                    // to ensure the copy isn't lost if the value is already on the stack. The
-                    // simulated stack assumes that the values on the stack are owned, which is true
-                    // for regular calls. However, the assign-copy operation is different to this.
-                    self.abstract_flush_stack_after(ctx, self.stack.len() - 1);
-                }
                 self.abstract_push_args(ctx, vec![*source], Some(mode));
                 let local = self.temp_to_local(ctx.fun_ctx, *dest);
                 self.emit(FF::Bytecode::StLoc(local));

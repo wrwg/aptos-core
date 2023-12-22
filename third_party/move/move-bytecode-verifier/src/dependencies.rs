@@ -230,7 +230,7 @@ fn verify_imported_structs(context: &Context) -> PartialVMResult<()> {
         let struct_name = context.resolver.identifier_at(struct_handle.name);
         match context
             .struct_id_to_handle_map
-            .get(&(owner_module_id, struct_name.to_owned()))
+            .get(&(owner_module_id.clone(), struct_name.to_owned()))
         {
             Some(def_idx) => {
                 let def_handle = owner_module.struct_handle_at(*def_idx);
@@ -248,6 +248,7 @@ fn verify_imported_structs(context: &Context) -> PartialVMResult<()> {
                 }
             },
             None => {
+                eprintln!("failed {}:{}", owner_module_id.name(), struct_name);
                 return Err(verification_error(
                     StatusCode::LOOKUP_FAILED,
                     IndexKind::StructHandle,
@@ -330,6 +331,11 @@ fn verify_imported_functions(context: &Context) -> PartialVMResult<()> {
                 .map_err(|e| e.at_index(IndexKind::FunctionHandle, idx as TableIndex))?;
             },
             None => {
+                eprintln!(
+                    "misssing {}::{}",
+                    owner_module_id.name().as_str(),
+                    function_name.as_str()
+                );
                 return Err(verification_error(
                     StatusCode::LOOKUP_FAILED,
                     IndexKind::FunctionHandle,

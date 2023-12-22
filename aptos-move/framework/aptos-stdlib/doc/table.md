@@ -22,6 +22,7 @@ struct itself, while the operations are implemented as native functions. No trav
 -  [Function `upsert`](#0x1_table_upsert)
 -  [Function `remove`](#0x1_table_remove)
 -  [Function `contains`](#0x1_table_contains)
+-  [Function `drop_unchecked`](#0x1_table_drop_unchecked)
 -  [Function `destroy`](#0x1_table_destroy)
 -  [Function `new_table_handle`](#0x1_table_new_table_handle)
 -  [Function `add_box`](#0x1_table_add_box)
@@ -345,6 +346,31 @@ Returns true iff <code><a href="table.md#0x1_table">table</a></code> contains an
 
 <pre><code><b>public</b> <b>fun</b> <a href="table.md#0x1_table_contains">contains</a>&lt;K: <b>copy</b> + drop, V&gt;(<a href="table.md#0x1_table">table</a>: &<a href="table.md#0x1_table_Table">Table</a>&lt;K, V&gt;, key: K): bool {
     <a href="table.md#0x1_table_contains_box">contains_box</a>&lt;K, V, <a href="table.md#0x1_table_Box">Box</a>&lt;V&gt;&gt;(<a href="table.md#0x1_table">table</a>, key)
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_table_drop_unchecked"></a>
+
+## Function `drop_unchecked`
+
+Testing only: allows to drop a table even if it is not empty.
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="table.md#0x1_table_drop_unchecked">drop_unchecked</a>&lt;K: <b>copy</b>, drop, V&gt;(<a href="table.md#0x1_table">table</a>: <a href="table.md#0x1_table_Table">table::Table</a>&lt;K, V&gt;)
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="table.md#0x1_table_drop_unchecked">drop_unchecked</a>&lt;K: <b>copy</b> + drop, V&gt;(<a href="table.md#0x1_table">table</a>: <a href="table.md#0x1_table_Table">Table</a>&lt;K, V&gt;) {
+    <a href="table.md#0x1_table_drop_unchecked_box">drop_unchecked_box</a>&lt;K, V, <a href="table.md#0x1_table_Box">Box</a>&lt;V&gt;&gt;(<a href="table.md#0x1_table">table</a>)
 }
 </code></pre>
 

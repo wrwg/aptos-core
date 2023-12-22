@@ -1480,6 +1480,7 @@ impl AptosVM {
             match is_account_init_for_sponsored_transaction(&txn_data, &self.features, resolver) {
                 Ok(result) => result,
                 Err(err) => {
+                    println!("{:?}", err);
                     let vm_status = err.into_vm_status();
                     let discarded_output = discarded_output(vm_status.status_code());
                     return (vm_status, discarded_output);

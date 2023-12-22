@@ -297,7 +297,10 @@ impl SharedTestingConfig {
         );
         match session.finish_with_extensions() {
             Ok((cs, extensions)) => (Ok(cs), Ok(extensions), return_result, test_run_info),
-            Err(err) => (Err(err.clone()), Err(err), return_result, test_run_info),
+            Err(err) => {
+                eprintln!("{:?}", err);
+                (Err(err.clone()), Err(err), return_result, test_run_info)
+            },
         }
     }
 

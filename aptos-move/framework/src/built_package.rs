@@ -150,10 +150,13 @@ pub fn build_model(
             known_attributes,
         },
     };
-    build_config.move_model_for_package(package_path, ModelConfig {
-        target_filter,
-        all_files_as_targets: false,
-    })
+    build_config.move_model_for_package(
+        package_path,
+        ModelConfig {
+            target_filter,
+            all_files_as_targets: false,
+        },
+    )
 }
 
 impl BuiltPackage {
@@ -174,7 +177,7 @@ impl BuiltPackage {
             generate_move_model: true,
             full_model_generation: options.check_test_code,
             install_dir: options.install_dir.clone(),
-            test_mode: false,
+            test_mode: true,
             force_recompilation: false,
             fetch_deps_only: false,
             skip_fetch_latest_git_deps: options.skip_fetch_latest_git_deps,

@@ -57,6 +57,7 @@ struct VMError_ {
 
 impl VMError {
     pub fn into_vm_status(self) -> VMStatus {
+        eprintln!("{:?}", self);
         let VMError_ {
             major_status,
             sub_status,
@@ -382,7 +383,7 @@ impl PartialVMError {
             indices,
             offsets,
         } = *self.0;
-        VMError(Box::new(VMError_ {
+        let err = VMError(Box::new(VMError_ {
             major_status,
             sub_status,
             message,
@@ -390,7 +391,9 @@ impl PartialVMError {
             location,
             indices,
             offsets,
-        }))
+        }));
+        eprintln!("error: {:?}", err);
+        err
     }
 
     pub fn new(major_status: StatusCode) -> Self {
@@ -620,7 +623,9 @@ pub fn bounds_error(
 }
 
 pub fn verification_error(status: StatusCode, kind: IndexKind, idx: TableIndex) -> PartialVMError {
-    PartialVMError::new(status).at_index(kind, idx)
+    let err = PartialVMError::new(status).at_index(kind, idx);
+    eprintln!("verification error: {:?}", err);
+    err
 }
 
 impl fmt::Debug for PartialVMError {
