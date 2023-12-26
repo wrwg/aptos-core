@@ -159,6 +159,11 @@ impl TestConfig {
             pipeline.add_processor(Box::new(LiveVarAnalysisProcessor {
                 with_copy_inference: true,
             }));
+            pipeline.add_processor(Box::new(ReferenceSafetyProcessor {}));
+            pipeline.add_processor(Box::new(ExplicitDrop {}));
+            pipeline.add_processor(Box::new(LiveVarAnalysisProcessor {
+                with_copy_inference: false,
+            }));
             Self {
                 type_check_only: false,
                 dump_ast: false,
