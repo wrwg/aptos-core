@@ -452,11 +452,16 @@ impl<'a> Instrumenter<'a> {
         let inlined_props: BTreeMap<_, _> = props
             .into_iter()
             .filter(|(_, prop)| {
-                // `SaveStateAnchor` markers are not properties; they are
-                // consumed positionally in `instrument_bytecode`.
+                // Anchor markers are consumed positionally below.
                 !matches!(
                     prop.as_ref(),
-                    ExpData::Call(_, move_model::ast::Operation::SaveStateAnchor(..), _)
+                    ExpData::Call(
+                        _,
+                        move_model::ast::Operation::SaveStateAnchor(..)
+                            | move_model::ast::Operation::FoldsCaptureAnchor(..)
+                            | move_model::ast::Operation::InlineCallSummary,
+                        _,
+                    )
                 )
             })
             .map(|(id, prop)| {
@@ -722,8 +727,12 @@ impl<'a> Instrumenter<'a> {
                 self.can_abort = true;
             },
             Prop(id, kind @ PropKind::Assume, prop) | Prop(id, kind @ PropKind::Assert, prop) => {
-                if let ExpData::Call(_, move_model::ast::Operation::SaveStateAnchor(label), _) =
-                    prop.as_ref()
+                if let ExpData::Call(
+                    _,
+                    move_model::ast::Operation::SaveStateAnchor(label)
+                    | move_model::ast::Operation::FoldsCaptureAnchor(label),
+                    _,
+                ) = prop.as_ref()
                 {
                     // Emit the state saves registered under this anchor label
                     // by any property anchored at this program point, and
@@ -744,6 +753,12 @@ impl<'a> Instrumenter<'a> {
                             &mut saved_vars,
                         );
                     }
+                    return;
+                }
+                if matches!(
+                    prop.as_ref(),
+                    ExpData::Call(_, move_model::ast::Operation::InlineCallSummary, _,)
+                ) {
                     return;
                 }
                 match inlined_props.get(&id) {

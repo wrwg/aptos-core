@@ -1020,6 +1020,7 @@ impl Generator<'_> {
             | Operation::SaveStateAnchor(..)
             | Operation::WithStateAnchor(..)
             | Operation::FoldsCaptureAnchor(..)
+            | Operation::InlineCallSummary
             | Operation::Trace(_)
             | Operation::Identical
             | Operation::EmptyVec
