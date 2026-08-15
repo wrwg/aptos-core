@@ -36,6 +36,9 @@ use std::{
     fs,
     num::ParseIntError,
     option::Option::None,
+    path::Path,
+    process::Output,
+    time::Duration,
 };
 
 /// A type alias for the way how we use crate `pretty`'s document type. `pretty` is a
@@ -60,6 +63,23 @@ pub struct BoogieOutput {
 
     /// Full output as a string.
     pub all_output: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoogieRunStatus {
+    Ok,
+    Timeout,
+    Errors,
+}
+
+impl BoogieRunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Timeout => "timeout",
+            Self::Errors => "errors",
+        }
+    }
 }
 
 /// Kind of boogie error.
@@ -112,15 +132,90 @@ static INCONSISTENCY_DIAG_STARTS: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?m)^inconsistency_detected\((?P<args>[^)]*)\)").unwrap());
 
 impl BoogieWrapper<'_> {
+    fn make_boogie_task(
+        options: &BoogieOptions,
+        boogie_file: String,
+        process_timeout_secs: u64,
+    ) -> RunBoogieWithSeeds {
+        let mut options = options.clone();
+        options.proc_cores = 1;
+        if options.z3_trace_file.is_some() {
+            options.z3_trace_file = Some(
+                Path::new(&boogie_file)
+                    .with_extension("z3.trace")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+        let retry_delay_secs = if options.num_instances == 1 && !options.sequential_task {
+            options.vc_timeout.clamp(1, 5) as u64
+        } else {
+            0
+        };
+        let prefer_primary = options.stable_test_output;
+        RunBoogieWithSeeds {
+            options,
+            boogie_file,
+            retry_delay_secs,
+            prefer_primary,
+            process_timeout_secs,
+        }
+    }
+
+    fn boogie_instance_count(options: &BoogieOptions) -> usize {
+        // A separate Boogie process loses the solver warm state established by
+        // preceding VCs. Retry soft timeouts with the next seed.
+        if options.num_instances == 1 {
+            2
+        } else {
+            options.num_instances
+        }
+    }
+
+    /// Generate bounded Boogie work and consume each result as it completes.
+    pub fn run_boogie_pipeline<M, E, P, C>(
+        options: &BoogieOptions,
+        job_count: usize,
+        mut produce: P,
+        consume: C,
+    ) -> Result<(), E>
+    where
+        P: FnMut(usize) -> Result<(String, u64, M), E>,
+        C: FnMut(usize, M, usize, std::io::Result<Output>, Duration) -> Result<(), E>,
+    {
+        // Preserve root-ordered diagnostics in snapshot tests.
+        let process_limit = if options.stable_test_output {
+            1
+        } else {
+            options.proc_cores
+        };
+        ProverTaskRunner::run_task_pipeline(
+            job_count,
+            Self::boogie_instance_count(options),
+            options.sequential_task,
+            0,
+            process_limit,
+            |index| {
+                let (boogie_file, process_timeout_secs, metadata) = produce(index)?;
+                Ok((
+                    Self::make_boogie_task(options, boogie_file, process_timeout_secs),
+                    metadata,
+                ))
+            },
+            consume,
+        )
+    }
+
     /// Calls boogie on the given file. On success, returns a struct representing the analyzed
     /// output of boogie.
     pub fn call_boogie(&self, boogie_file: &str) -> anyhow::Result<BoogieOutput> {
-        let args = self.options.get_boogie_command(boogie_file)?;
         info!("running solver");
-        debug!("command line: {}", args.iter().join(" "));
         let task = RunBoogieWithSeeds {
             options: self.options.clone(),
             boogie_file: boogie_file.to_string(),
+            retry_delay_secs: 0,
+            prefer_primary: false,
+            process_timeout_secs: 0,
         };
         // When running on complicated formulas(especially those with quantifiers), SMT solvers
         // can suffer from the so-called butterfly effect, where minor changes such as using
@@ -133,11 +228,23 @@ impl BoogieWrapper<'_> {
             self.options.sequential_task,
             self.options.hard_timeout_secs,
         );
+        self.analyze_boogie_result(boogie_file, seed, output_res)
+    }
+
+    /// Analyze one raw result returned by the bounded process queue.
+    pub fn analyze_boogie_result(
+        &self,
+        boogie_file: &str,
+        seed: usize,
+        output_res: std::io::Result<Output>,
+    ) -> anyhow::Result<BoogieOutput> {
+        let args = self.options.get_boogie_command(boogie_file)?;
+        debug!("command line: {}", args.iter().join(" "));
         let output = match output_res {
             Err(err) => {
                 if err.kind() == std::io::ErrorKind::TimedOut {
                     let err = BoogieError {
-                        kind: BoogieErrorKind::Internal,
+                        kind: BoogieErrorKind::Inconclusive,
                         loc: self.env.unknown_loc(),
                         message: format!(
                             "Boogie execution exceeded hard timeout of {}s",
@@ -221,6 +328,38 @@ impl BoogieWrapper<'_> {
     /// Calls boogie and analyzes output.
     pub fn call_boogie_and_verify_output(&self, boogie_file: &str) -> anyhow::Result<()> {
         let BoogieOutput { errors, all_output } = self.call_boogie(boogie_file)?;
+        self.verify_output(boogie_file, errors, all_output)
+    }
+
+    /// Analyze and report one result returned by the bounded process queue.
+    pub fn analyze_and_verify_output(
+        &self,
+        boogie_file: &str,
+        seed: usize,
+        output_res: std::io::Result<Output>,
+    ) -> anyhow::Result<BoogieRunStatus> {
+        let BoogieOutput { errors, all_output } =
+            self.analyze_boogie_result(boogie_file, seed, output_res)?;
+        let status = if errors
+            .iter()
+            .any(|error| error.kind == BoogieErrorKind::Inconclusive)
+        {
+            BoogieRunStatus::Timeout
+        } else if errors.is_empty() {
+            BoogieRunStatus::Ok
+        } else {
+            BoogieRunStatus::Errors
+        };
+        self.verify_output(boogie_file, errors, all_output)?;
+        Ok(status)
+    }
+
+    fn verify_output(
+        &self,
+        boogie_file: &str,
+        errors: Vec<BoogieError>,
+        all_output: String,
+    ) -> anyhow::Result<()> {
         let boogie_log_file = self.options.get_boogie_log_file(boogie_file);
         let log_file_existed = std::path::Path::new(&boogie_log_file).exists();
         debug!("writing boogie log to {}", boogie_log_file);

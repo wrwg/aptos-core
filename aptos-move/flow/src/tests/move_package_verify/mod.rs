@@ -14,6 +14,7 @@ mod filter_module_exclude_function;
 mod filter_module_excludes_all_funcs;
 mod malformed_prover_toml;
 mod prover_toml_sanitization;
+mod timeout_zero;
 mod verify_failure;
 mod verify_success;
 mod with_errors;

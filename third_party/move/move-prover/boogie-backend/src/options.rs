@@ -146,13 +146,6 @@ pub struct BoogieOptions {
     /// The number of cores to use for parallel processing of verification conditions.
     #[arg(long = "cores", default_value_t = 4)]
     pub proc_cores: usize,
-    /// The number of shards to split the verification problem into.
-    #[arg(skip)]
-    pub shards: usize,
-    /// If there are shards, specifies to only run the given shard. Shards are numbered
-    /// starting at 1.
-    #[arg(skip)]
-    pub only_shard: Option<usize>,
     /// A (soft) timeout for the solver, per verification condition, in seconds.
     #[arg(short = 'T', long = "timeout", default_value_t = 40)]
     pub vc_timeout: usize,
@@ -232,8 +225,6 @@ impl Default for BoogieOptions {
             serialize_bound: 0,
             random_seed: 1,
             proc_cores: 4,
-            shards: 1,
-            only_shard: None,
             vc_timeout: 40,
             global_timeout_overwrite: true,
             keep_artifacts: false,
@@ -256,6 +247,8 @@ impl Default for BoogieOptions {
 }
 
 impl BoogieOptions {
+    const PROCESS_TIMEOUT_GRACE_SECS: u64 = 10;
+
     /// Derive options based on other set options.
     pub fn derive_options(&mut self) {
         use VectorTheory::*;
@@ -358,6 +351,21 @@ impl BoogieOptions {
             usize::saturating_add(time, time)
         } else {
             time
+        }
+    }
+
+    /// Return the process deadline for a BPL containing one verification root.
+    /// An explicit hard timeout takes precedence. Otherwise, allow a small
+    /// amount of time beyond the root's Boogie soft timeout for parsing and
+    /// process shutdown.
+    pub fn process_timeout_secs(&self, root_timeout_secs: usize) -> u64 {
+        if self.hard_timeout_secs > 0 {
+            self.hard_timeout_secs
+        } else if root_timeout_secs == 0 {
+            0
+        } else {
+            (self.adjust_timeout(root_timeout_secs) as u64)
+                .saturating_add(Self::PROCESS_TIMEOUT_GRACE_SECS)
         }
     }
 
@@ -496,5 +504,21 @@ impl BoogieOptions {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BoogieOptions;
+
+    #[test]
+    fn derives_process_timeout_from_root_timeout() {
+        let mut options = BoogieOptions::default();
+        assert!(options.process_timeout_secs(40) >= 50);
+        assert_eq!(options.process_timeout_secs(0), 0);
+
+        options.hard_timeout_secs = 7;
+        assert_eq!(options.process_timeout_secs(40), 7);
+        assert_eq!(options.process_timeout_secs(0), 7);
     }
 }

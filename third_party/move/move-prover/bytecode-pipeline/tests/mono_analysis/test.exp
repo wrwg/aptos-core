@@ -77,3 +77,21 @@ fun Test::f1 [baseline] = {
 fun Test::f4 [baseline] = {
   <u128>
 }
+root Test::f1 [verification] <> = {
+  Test::A<#0, u64>
+}
+root Test::f2 [verification] <> = {
+  Test::A<u8, u64>
+  Test::B<u8>
+}
+root Test::f3 [verification] <> = {
+  Test::A<#0, u64>
+}
+root Test::f4 [verification] <> = {
+  Test::A<#0, u64>
+  Test::B<#0>
+}
+root Test::f5 [verification] <> = {
+  Test::A<u128, u64>
+  Test::B<u128>
+}
