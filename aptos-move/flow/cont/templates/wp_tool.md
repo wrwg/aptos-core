@@ -1,71 +1,37 @@
-{# WP tool reference #}
+{# One authoritative description of WP's contract and diagnostic handling. #}
 {% if once(name="wp_tool") %}
 
 ### WP tool
 
-`{{ tool(name="move_package_wp") }}` derives function conditions and writes
-them to source. Give it `package_path` and optionally a `filter`:
+`{{ tool(name="move_package_wp") }}` derives conditions and writes them to source.
+Pass `package_path`; optionally use `filter: "module"` or
+`filter: "module::function"`. Without a filter it processes the package.
+`spec_output: "inline"` (default) writes contracts into source;
+`"file"` writes companion `.spec.move` files. Invariants belong beside loops.
 
-- omitted infers every function in the package;
-- `filter: "module"` restricts it to one module;
-- `filter: "module::function"` restricts it to a single function. Use this to
-  rework one function without touching the others.
+Interpret the result per function:
 
-Choose `spec_output` from the requested output location:
+- **No warnings:** the generated specification is complete and correct by
+  construction, including implicit arithmetic, bounds, resource, and callee
+  aborts. WP does not run the prover. Verification may still time out: repair
+  the proof or use an equivalent solver-friendly expression without weakening
+  the contract. A compilation error or counterexample against unchanged,
+  warning-free output is a tool bug.
+- **Missing or inadequate loop invariant:** add an invariant that holds at
+  entry and is preserved by each iteration. The warning's bounded loop-head
+  observations help discover it; they are not a proof and describe only the
+  displayed execution prefix. Rerun WP for that function after removing stale
+  generated function clauses, preserving invariants, helpers, and user clauses.
+- **Partial callee specification:** the caller cannot have total abort coverage
+  while that callee remains partial. Keep `pragma aborts_if_is_partial` and
+  document the named callee. Do not repeatedly rewrite the caller or remove
+  the pragma to claim totality. The inherited-partiality rule below defines
+  which such boundaries the candidate check accepts.
+- **Missing callee specification:** a behavioral predicate over a helper with
+  no contract cannot be verified. Supply and verify that helper's contract
+  first when it is in scope, then rerun the caller. Report an out-of-scope
+  dependency blocker.
 
-- `inline` (default) writes function contracts into source files;
-- `file` writes `.spec.move` files and leaves ordinary function contracts out
-  of the source. Loop invariants still belong at their source loops.
-
-Weakest preconditions are exact in the absence of loops, so a scope with no
-loop, or whose loops already carry adequate invariants, yields a complete
-contract in one call — including the cast, overflow, and division obligations
-the source never names.
-
-Run it on any scope, loops included. The call succeeds and writes what it could
-derive; a loop whose invariant does not constrain its modified state is reported
-as a warning against that function, and the condition it could not constrain is
-not emitted. So a warning means that function's contract is incomplete, while
-every function it did not name has a complete WP draft, ready for simplification
-and the candidate check.
-
-A warning names the loop and its source location, lists the loop-carried state,
-and gives bounded loop-head facts for the first few iterations. Those facts are
-the raw material for the invariant: look for a predicate that holds at `head[0]`
-and is preserved across one back-edge. They are observations, not a proof, and
-hold only within the displayed bound. Where several loops in one function are
-unrolled, facts at a loop reached through an earlier one hold for that bounded
-prefix only, and say so.
-
-A second warning reports that a function's aborts could not be characterized
-exactly, so its `aborts_if` clauses are a lower bound and the contract carries
-`aborts_if_is_partial`. It names the reasons; the two common ones are an abort
-that did not survive an uninvariant loop and an abort that rides on an
-unspecified callee. Both are the same repair as above — supply the invariant or
-the callee contract and rerun. Complete the abort behavior before removing the
-pragma: deleting it alone turns an incomplete contract into a false claim of
-exactness, and the candidate check rejects either form.
-
-A contract that carries the pragma because a *callee's* contract is partial is
-the exception: there the abort condition does not exist to be stated, and the
-check admits it. That holds for a callee inference reported this way, or one
-the tree already carried -- not for a helper the session marked partial
-itself.
-
-A scope can also contain a helper with no specification of its own. Where the
-derived contract has to speak about that helper through a behavioral predicate
-(`result_of`, `aborts_of`), the prover rejects it and names the helper: a
-predicate over a function that publishes no contract has no sound meaning.
-Infer the helper first, then re-run for its caller — callee before caller, the
-same order the rest of a dependency closure needs. A recursive or mutually
-recursive helper needs no special handling: its derived contract states the
-result in terms of itself or its sibling, which is exact.
-
-Work one warned function at a time: add its invariants, rerun with
-`filter: "module::function"`, and read the result. An invariant that is too weak
-leaves the warning in place, so repeat on that function until it is gone before
-moving to the next. Remove the stale WP-generated **function clauses** before
-each rerun, keeping the invariants and spec helpers. Preserve all user-written
-clauses.
-
+Unexpected loss of conditions, malformed output, or any other inference
+failure is a tool bug, not an invitation to weaken the specification.
 {% endif %}

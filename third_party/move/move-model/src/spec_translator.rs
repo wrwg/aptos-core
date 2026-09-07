@@ -1390,7 +1390,8 @@ impl<'a, T: ExpGenerator<'a>> ExpRewriterFunctions for SpecTranslator<'a, '_, T>
                     self.builder.global_env().diag_with_labels(
                         Severity::Error,
                         &loc,
-                        "`old(..)` applied to expression which does not depend on state",
+                        "`old(..)` applied to expression which does not depend on state; \
+                         remove `old(..)` to use the state-independent value",
                         labels,
                     )
                 }

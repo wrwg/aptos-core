@@ -166,7 +166,7 @@ module 0x66::calculator {
 /*
 Inference diagnostics:
 warning: WP could not characterize the aborts of `calculator::process` exactly, so its emitted `aborts_if` clauses are a lower bound and the specification carries `aborts_if_is_partial`. Complete the abort behavior and remove that pragma before relying on the contract. Reasons:
-  = an abort condition did not survive a memory-havocking loop
+  = a dynamic call has no trusted complete abort summary
    ┌─ tests/inference/calculator.move:21:5
    │
 21 │ ╭     fun process(s: &signer, input: Input) acquires State {
@@ -179,7 +179,7 @@ warning: WP could not characterize the aborts of `calculator::process` exactly, 
    │ ╰─────^
 
 warning: WP could not characterize the aborts of `calculator::number` exactly, so its emitted `aborts_if` clauses are a lower bound and the specification carries `aborts_if_is_partial`. Complete the abort behavior and remove that pragma before relying on the contract. Reasons:
-  = an abort condition did not survive a memory-havocking loop
+  = callee `0x66::calculator::process` has no trusted complete abort summary
    ┌─ tests/inference/calculator.move:50:5
    │
 50 │ ╭     entry fun number(s: &signer, x: u64) acquires State {
@@ -188,7 +188,7 @@ warning: WP could not characterize the aborts of `calculator::number` exactly, s
    │ ╰─────^
 
 warning: WP could not characterize the aborts of `calculator::add` exactly, so its emitted `aborts_if` clauses are a lower bound and the specification carries `aborts_if_is_partial`. Complete the abort behavior and remove that pragma before relying on the contract. Reasons:
-  = an abort condition did not survive a memory-havocking loop
+  = callee `0x66::calculator::process` has no trusted complete abort summary
    ┌─ tests/inference/calculator.move:58:5
    │
 58 │ ╭     entry fun add(s: &signer) acquires State {
@@ -197,7 +197,7 @@ warning: WP could not characterize the aborts of `calculator::add` exactly, so i
    │ ╰─────^
 
 warning: WP could not characterize the aborts of `calculator::sub` exactly, so its emitted `aborts_if` clauses are a lower bound and the specification carries `aborts_if_is_partial`. Complete the abort behavior and remove that pragma before relying on the contract. Reasons:
-  = an abort condition did not survive a memory-havocking loop
+  = callee `0x66::calculator::process` has no trusted complete abort summary
    ┌─ tests/inference/calculator.move:62:5
    │
 62 │ ╭     entry fun sub(s: &signer) acquires State {

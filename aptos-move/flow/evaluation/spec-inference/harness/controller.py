@@ -31,6 +31,7 @@ from .artifacts import (
 )
 from .config import ARM_TO_TACTIC, ExperimentConfig, ResolvedRunSpec, RunSpec
 from .credentials import redact_tree
+from .sdk_metrics import write_sdk_metrics
 from .identifiers import resolve_within
 from .judge import Judge, JudgeResult
 from .state_machine import ConversationPolicy
@@ -330,6 +331,7 @@ class Controller:
                 ),
             }
             controller_events.emit("run_end", **result)
+        write_sdk_metrics(self.artifact_dir / "claude-events.jsonl", self.artifact_dir / "sdk-metrics.json")
         self._finalize(result)
         return result
 
@@ -526,6 +528,8 @@ class Controller:
             raise ValueError(
                 "run manifest and experiment configuration hash disagree"
             )
+        if self.agent_kind == "claude":
+            run_record["sdk_telemetry_schema"] = 1
         write_json(self.artifact_dir / "run.json", run_record)
 
     def _refutation_identities(self) -> list[str]:
@@ -646,7 +650,7 @@ class Controller:
         tactic = ARM_TO_TACTIC[self.run.spec.arm]
         level = self._feedback_level()
         command = (
-            f"mcp --inference-tactic {tactic} --evaluation-mode "
+            f"mcp --no-package-cache --inference-tactic {tactic} --evaluation-mode "
             f"--feedback-level {level}"
         )
         # The task criteria are the acceptance intervention. A baseline cell

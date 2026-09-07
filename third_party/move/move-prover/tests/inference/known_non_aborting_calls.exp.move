@@ -34,7 +34,7 @@ module 0x42::known_non_aborting_calls {
 /*
 Inference diagnostics:
 warning: WP could not characterize the aborts of `known_non_aborting_calls::constructs_empty_string` exactly, so its emitted `aborts_if` clauses are a lower bound and the specification carries `aborts_if_is_partial`. Complete the abort behavior and remove that pragma before relying on the contract. Reasons:
-  = an abort condition did not survive a memory-havocking loop
+  = callee `0x1::string::length` has no trusted complete abort summary
    ┌─ tests/inference/known_non_aborting_calls.move:12:5
    │
 12 │ ╭     fun constructs_empty_string(): bool {

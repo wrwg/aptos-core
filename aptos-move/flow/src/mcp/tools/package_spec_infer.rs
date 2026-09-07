@@ -40,7 +40,9 @@ enum SpecOutput {
 struct MovePackageSpecInferParams {
     /// Path to the Move package directory.
     package_path: String,
-    /// Optional filter: `module_name` or `module_name::function_name`.
+    /// Optional filter: `module_name`, `module_name::function_name`, or
+    /// `address::module_name::function_name` (numeric or named address).
+    /// A module name without an address must be unambiguous.
     /// When omitted, all target modules are inferred.
     filter: Option<String>,
     /// Where to write inferred specifications. Defaults to `inline` (inject into
@@ -52,12 +54,10 @@ struct MovePackageSpecInferParams {
 
 #[tool_router(router = package_spec_infer_router, vis = "pub(crate)")]
 impl FlowSession {
-    // Low-level WP inference tool. Requires multi-phase workflow context
-    // (loop-invariant synthesis, simplification, verification) that is only
-    // available through subagent delegation. See skill docs for spec_output param.
+    // Low-level WP inference tool. The skill supplies the loop/callee repair workflow.
     #[tool(
-        description = "Raw WP engine — output requires loop-invariant synthesis and simplification \
-                       that only the /move-inf skill workflow provides. Do not call directly.",
+        description = "WP specification inference. Use through /move-inf; repair any reported \
+                       missing loop invariants or incomplete callee contracts and rerun.",
         annotations(read_only_hint = false, destructive_hint = true)
     )]
     async fn move_package_wp(
