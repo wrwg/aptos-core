@@ -2167,7 +2167,11 @@ fn update_spec<'env>(
             return true;
         }
         let references_only_params = exp_only_references_params(&condition.exp, num_params);
-        let unsourcifiable_behavior = has_unsourcifiable_behavior_target(&condition.exp);
+        // Lifted-lambda summaries are consumed as typed ASTs by the verifier,
+        // never emitted as source. Their references to other lifted closures
+        // are valid even though those compiler-generated names have no Move spelling.
+        let unsourcifiable_behavior =
+            !is_lambda_lifted_name(fun_env) && has_unsourcifiable_behavior_target(&condition.exp);
         let unsourcifiable_ghost = has_unsourcifiable_ghost_memory(env, &condition.exp);
         if references_only_params && !unsourcifiable_behavior && !unsourcifiable_ghost {
             return true;
@@ -4211,7 +4215,21 @@ impl StateBoundaryAnalysis<'_, '_> {
                                 .try_as_native_spec_exp(*module_id, *fun_id, type_inst, srcs)
                                 .is_some()))
                 },
-                Operation::Invoke => true,
+                Operation::Invoke => {
+                    // Do not invent an intermediate memory for a value-only
+                    // invocation. No predicate could define that memory, and
+                    // later reads would consequently refer to an unconstrained
+                    // state instead of the state preceding the call.
+                    let usage = move_stackless_bytecode::usage_analysis::get_memory_usage(
+                        &self.analyzer.target,
+                    );
+                    usage.invoke_frame_wildcard
+                        || !usage.invoke_frame.all.is_empty()
+                        || !usage.modified.transitive.is_empty()
+                        || srcs
+                            .iter()
+                            .any(|s| self.analyzer.get_local_type(*s).is_mutable_reference())
+                },
                 _ => false,
             },
             _ => false,
@@ -6627,6 +6645,11 @@ impl<'env> SpecInferenceAnalyzer<'env> {
                     return None;
                 };
                 if args.len() != 2
+                    // An intermediate update defines a state that later writes
+                    // may consume (and may alias). Replacing it by a field fact
+                    // would orphan that state and turn the fact into a false
+                    // claim about the final state.
+                    || range.post.is_some_and(|label| label != self.analyzer.at_end_label.get())
                     || range
                         .pre
                         .is_none_or(|label| label == self.analyzer.at_entry_label)

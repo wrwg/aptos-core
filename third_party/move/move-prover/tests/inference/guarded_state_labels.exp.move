@@ -1,6 +1,4 @@
-// Covers source emission and verification, not mutation strength. See
-// aptos-move/flow/state-label-assumptions-investigation.md for a known surviving
-// mutation caused by the existing state-label verification instrumentation.
+// inference-reject-mutation: *borrow_global_mut<Config>(addr) = config; => *borrow_global_mut<Config>(addr) = Config { value: 0 };
 module 0x42::guarded_state_labels {
     use std::signer;
     struct Pending has key { value: u64 }
@@ -60,4 +58,5 @@ module 0x42::guarded_state_labels {
 }
 /*
 Verification: Succeeded.
+Mutation: Rejected by postcondition.
 */

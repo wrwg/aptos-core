@@ -1,55 +1,76 @@
-# Unresolved state-label verification issue
+# State-label verification repair
 
-Discovered while strengthening the regression for the gas-schedule WP cycle
-fix. This is a verification-instrumentation bug, not a reason to run the prover
-inside WP. The guidance describes the intended WP correctness contract; this
-finding means the implementation still has a correctness issue to repair.
+The gas-schedule mutation regression exposed a verifier soundness bug: a mixed
+postcondition containing an intermediate-state definition was assumed in full,
+then skipped as a proof obligation. The final write was therefore assumed rather
+than verified. This is a verification-instrumentation bug; WP must not invoke
+the prover to compensate for it.
 
-## Reproducer
+## Implementation
 
-In `third_party/move/move-prover/tests/inference/guarded_state_labels.move`, add:
+- Project only free intermediate-state definitions, preserving guards and let
+  scope. Quantified states remain proof obligations.
+- Always assert full postconditions. Keep successful callee postconditions even
+  when their defining fragments were assumed before the call.
+- Share structural projection with behavioral-predicate generation so abort
+  predicates cannot import final-state claims from an ensures clause.
+- Guard call definitions by their requires/non-aborting domain and mutation
+  definitions by resource existence/absence. An aborting operation must not
+  make verification vacuous by assuming its success conditions.
+- Snapshot implicit pre-states explicitly, including post-labeled behavioral
+  calls and mutations. Callee snapshots refer to call entry, not caller entry.
+- Connect referenced memory-free opaque-call results to their result carriers.
+  Avoid generating unnecessary behavioral summaries for unrelated calls.
+- Preserve memory state across value-only dynamic calls whose conservative
+  effects contain neither memory writes nor mutable-reference outputs.
+- Retain intermediate field-update definitions when later writes can alias
+  them. Only final field updates may be weakened to a leaf equality. This also
+  repairs the three-address and unrolled-loop inference fixtures, which had
+  previously recorded verification failures in their baselines.
+- Expose plain-struct value-state witnesses through constructor fields with
+  constructor triggers. Supply reverse evaluator triggers for memory-free
+  function-parameter postconditions. These support E-matching with MBQI disabled.
+- Keep typed compiler-internal lambda summaries even when their synthetic
+  closure references have no source spelling. User-facing inferred conditions
+  still undergo source-representability checks.
 
-```move
-// inference-reject-mutation: *borrow_global_mut<Config>(addr) = config; => *borrow_global_mut<Config>(addr) = Config { value: 0 };
-```
+## Regression coverage
 
-Run with the real Boogie/Z3 executables:
+- `guarded_state_labels`: the original contract verifies; replacing the final
+  update with a zero-valued configuration must be rejected.
+- `mixed_callee_postcondition`: successful callee properties survive definition
+  extraction, including after the caller has changed the resource.
+- `aborting_result_definition`: incorrect non-aborting claims are rejected for
+  both an always-aborting callee and a missing resource.
+- Quantified-state fixtures retain their false claims as explicit negative
+  cases and add valid counterparts. No integer lies strictly between n and
+  n + 1; incrementing an unconstrained counter twice does not ensure it is <100.
+- Existing chained opaque-call, calculator, mutable-reference composition,
+  bitvector, and nested-lambda fixtures exercise the associated repairs.
+- The three-address mutation fixture now verifies and rejects a wrong final
+  write; the unrolled-loop fixture now verifies with its distinct write states.
 
-```sh
-cargo test -p move-prover --profile ci --test inference_testsuite guarded_state_labels
-```
+Solver settings are unchanged. Inference and verification remain separate runs.
+The obsolete experimental patch has been removed; it did not contain the full
+repair and must not be applied.
 
-The original verifies, but the mutation also verifies, so the mutation check
-fails. The current checked-in-style fixture only checks source emission and
-ordinary verification; it does **not** establish mutation rejection.
+## Validation
 
-## Cause
+Using the `ci` profile and the configured Boogie/Z3 executables, without MBQI:
 
-`emit_state_label_assumes` assumes a whole postcondition whenever it contains
-an intermediate-state definition. `non_defining_residual` then skips the whole
-condition if any label-defining behavioral/spec-function call occurs within it.
-A clause containing `result_of<extract>` and the final `update<Config>` thus
-assumes the final write instead of proving it. The same issue can mask errors
-in other mixed clauses. Callee instrumentation also removes entire mixed
-postconditions after emitting only their defining fragment.
+- All 386 functional/regression prover tests pass. The `choice` negative test
+  uses an explicit, parenthesized return without a trailing semicolon to keep
+  its diagnostic on one return location; its verification errors are unchanged.
+- All 54 inference baseline tests pass, including the final-write mutation
+  rejection checks. These tests compare expected diagnostics as well as proofs;
+  passing the suite is not a claim that every negative fixture verifies.
+- All 234 library unit tests across `move-model`, `move-prover`,
+  `move-prover-bytecode-pipeline`, and `move-prover-boogie-backend` pass.
+- Scoped Clippy with repository lint flags and the Flow compile check pass.
+  The Flow binary also builds successfully with `cargo build -p aptos-move-flow
+  --profile ci` (one unrelated existing consensus dead-code warning).
+- Repository formatting passes `cargo +nightly fmt --all -- --check`.
 
-## Experimental fix — not applied
-
-`state-label-assumptions-investigation.patch` records an unfinished experiment:
-extract guarded, scoped definitions; convert intermediate `result_of` to
-full-arity `ensures_of`; assert residual final-state properties; keep full
-callee postconditions on successful calls.
-
-It rejects the mutation while proving the original. It also preserves the
-tuple/`&mut` sourcifier regression after correctly constructing result slots.
-However, broader tests are not green: `calculator` and `chained_opaque` exposed
-behavioral-predicate issues, and four functional state-label fixtures produced
-new failures (three postcondition failures and one timeout). Some fixtures
-contain invalid claims previously assumed, but these results need individual
-review; they must not be blindly accepted as new baselines. A final attempt to
-anchor memory-free opaque calls is included in the patch; `chained_opaque`
-still failed with it.
-
-The experiment was removed from working Rust code. Do not apply or ship this
-patch as a validated fix. The targeted WP cycle/ghost-memory fixes do not resolve
-this separate verification bug.
+The v1.2 corpus still needs fresh screening with the repaired toolchain before
+the requested full round. No evaluation sessions have been launched as part
+of this repair, and the pinned Etna revision has not changed.

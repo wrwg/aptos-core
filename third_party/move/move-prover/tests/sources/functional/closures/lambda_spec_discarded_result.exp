@@ -1,6 +1,6 @@
 Move prover returns: exiting with condition generation errors
 warning: WP could not characterize the aborts of `lambda_spec_discarded_result::__lambda__1__drive` exactly, so its emitted `aborts_if` clauses are a lower bound and the specification carries `aborts_if_is_partial`. Complete the abort behavior and remove that pragma before relying on the contract. Reasons:
-  = an abort condition did not survive a memory-havocking loop
+  = callee `0x1::vector::reverse` has no trusted complete abort summary
    ┌─ tests/sources/functional/closures/lambda_spec_discarded_result.move:23:15
    │
 23 │           apply(|v| {
