@@ -54,7 +54,10 @@ module 0x42::vault {
 /*
 Inference diagnostics:
 warning: WP could not characterize the aborts of `vault::harvest` exactly, so its emitted `aborts_if` clauses are a lower bound and the specification carries `aborts_if_is_partial`. Complete the abort behavior and remove that pragma before relying on the contract. Reasons:
-  = an abort condition did not survive a memory-havocking loop
+  = callee `0x1::fungible_asset::balance` has no trusted complete abort summary
+  = callee `0x1::fungible_asset::deposit` has no trusted complete abort summary
+  = callee `0x1::fungible_asset::withdraw` has no trusted complete abort summary
+  = a dynamic call has no trusted complete abort summary
    ┌─ tests/inference/vault.move:21:5
    │
 21 │ ╭     public fun harvest(caller: &signer, vault_obj: Object<Vault>) {

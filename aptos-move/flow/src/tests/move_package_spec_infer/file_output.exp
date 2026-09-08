@@ -1,5 +1,6 @@
 inference succeeded, wrote spec files for 1 file(s) (read the files to see the changes):
 - <TEMPDIR>/filegen.spec.move
+verification succeeded
 
 === source (untouched) ===
 module 0xCAFE::filegen {

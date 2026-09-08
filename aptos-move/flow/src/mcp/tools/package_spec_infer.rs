@@ -5,7 +5,10 @@ use super::{
     super::{package_data::DiagnosticSource, session::FlowSession},
     load_sanitized_prover_options, resolve_filter,
 };
-use crate::{evaluation::LOOP_INVARIANT_EVIDENCE_DEPTH, hooks::source_check};
+use crate::{
+    evaluation::LOOP_INVARIANT_EVIDENCE_DEPTH, hooks::source_check,
+    mcp::tools::package_verify::MovePackageVerifyParams,
+};
 use codespan_reporting::term::termcolor::NoColor;
 use move_model::model::GlobalEnv;
 use move_prover::inference::InferenceOutput;
@@ -40,7 +43,9 @@ enum SpecOutput {
 struct MovePackageSpecInferParams {
     /// Path to the Move package directory.
     package_path: String,
-    /// Optional filter: `module_name` or `module_name::function_name`.
+    /// Optional filter: `module_name`, `module_name::function_name`, or
+    /// `address::module_name::function_name` (numeric or named address).
+    /// A module name without an address must be unambiguous.
     /// When omitted, all target modules are inferred.
     filter: Option<String>,
     /// Where to write inferred specifications. Defaults to `inline` (inject into
@@ -52,12 +57,10 @@ struct MovePackageSpecInferParams {
 
 #[tool_router(router = package_spec_infer_router, vis = "pub(crate)")]
 impl FlowSession {
-    // Low-level WP inference tool. Requires multi-phase workflow context
-    // (loop-invariant synthesis, simplification, verification) that is only
-    // available through subagent delegation. See skill docs for spec_output param.
+    // Low-level WP inference tool. The skill supplies the loop/callee repair workflow.
     #[tool(
-        description = "Raw WP engine — output requires loop-invariant synthesis and simplification \
-                       that only the /move-inf skill workflow provides. Do not call directly.",
+        description = "WP specification inference. Use through /move-inf; repair any reported \
+                       missing loop invariants or incomplete callee contracts and rerun.",
         annotations(read_only_hint = false, destructive_hint = true)
     )]
     async fn move_package_wp(
@@ -81,7 +84,7 @@ impl FlowSession {
         let tool_timeout = self.tool_timeout();
         let wrote_files = Arc::new(AtomicBool::new(false));
         let wrote_files_in = Arc::clone(&wrote_files);
-        let result = tokio::time::timeout(
+        let mut result = tokio::time::timeout(
             tool_timeout,
             tokio::task::spawn_blocking(move || {
                 let mut data = pkg.lock().unwrap();
@@ -153,6 +156,13 @@ impl FlowSession {
                             ))]))
                         },
                     };
+                    // Model construction runs the whole inliner before
+                    // non-matching modules are demoted, so its warning buffer
+                    // can describe unrelated dependency functions. The cached
+                    // package was already checked for compilation errors above.
+                    // Start the requested WP operation with a clean buffer, as
+                    // the unfiltered path below already does.
+                    fresh.clear_diag();
                     let result = move_prover::inference::run_spec_inference_with_model(
                         &mut fresh,
                         &mut error_writer,
@@ -299,7 +309,7 @@ impl FlowSession {
                             let mut check_diags = String::new();
                             for path in &modified_files {
                                 let source = fs::read_to_string(path).unwrap_or_default();
-                                let result = source_check::check(path, &source);
+                                let result = source_check::check_inferred_output(path, &source);
                                 if !result.has_parse_errors {
                                     source_check::format_file(path);
                                 }
@@ -413,8 +423,35 @@ impl FlowSession {
             rmcp::ErrorData::internal_error(format!("spec infer task panicked: {}", e), None)
         })??;
 
-        if wrote_files.load(Ordering::Relaxed) {
+        let wrote_files = wrote_files.load(Ordering::Relaxed);
+        if wrote_files {
             self.invalidate_package(&params.package_path);
+        }
+
+        // Inference treats supplied loop invariants as assumptions while it derives
+        // contracts. Rebuild the package from the files just written and verify the
+        // result so an invariant which fails initialization or preservation cannot
+        // be reported as a successful WP result.
+        if wrote_files && result.is_error != Some(true) {
+            let verification = self
+                .move_package_verify(Parameters(MovePackageVerifyParams {
+                    package_path: params.package_path.clone(),
+                    filter: params.filter.clone(),
+                    exclude: None,
+                    timeout: None,
+                    split_vcs_by_assert: None,
+                    error_limit: None,
+                }))
+                .await?;
+            if verification.is_error == Some(true) {
+                let mut content = vec![Content::text(
+                    "inference wrote specifications, but post-inference verification failed; \
+                     repair the reported specification or loop invariant and rerun WP",
+                )];
+                content.extend(verification.content);
+                return Ok(CallToolResult::error(content));
+            }
+            result.content.extend(verification.content);
         }
 
         Ok(result)

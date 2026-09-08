@@ -19,8 +19,23 @@ from pathlib import Path
 from typing import Any
 
 
-CREDENTIAL_VARIABLES = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
+CREDENTIAL_VARIABLES = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 REPLACEMENT = "[REDACTED]"
+
+
+def require_provider_auth(model: str, endpoint: str) -> None:
+    """Fail closed before a real session can select paid API credentials."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        raise ValueError("ANTHROPIC_API_KEY is forbidden for evaluation runs")
+    if model.startswith("claude-") or endpoint == "https://api.anthropic.com":
+        if endpoint != "https://api.anthropic.com":
+            raise ValueError("Claude subscription requires the Anthropic endpoint")
+        if os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+            raise ValueError("ANTHROPIC_AUTH_TOKEN is forbidden for Claude subscription runs")
+        if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            raise ValueError("Claude subscription requires CLAUDE_CODE_OAUTH_TOKEN; no API fallback")
+    elif not configured_credentials():
+        raise ValueError("provider credential missing")
 
 
 def configured_credentials() -> list[str]:

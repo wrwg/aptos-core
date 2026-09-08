@@ -23,27 +23,29 @@ use rmcp::{
 use std::time::{Duration, Instant};
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct MovePackageVerifyParams {
+pub(super) struct MovePackageVerifyParams {
     /// Path to the Move package directory.
-    package_path: String,
-    /// Optional filter: `module_name` or `module_name::function_name`.
+    pub(super) package_path: String,
+    /// Optional filter: `module_name`, `module_name::function_name`, or
+    /// `address::module_name::function_name` (numeric or named address).
+    /// A module name without an address must be unambiguous.
     /// When omitted, all target modules are verified.
-    filter: Option<String>,
+    pub(super) filter: Option<String>,
     /// Optional list of targets to exclude from verification.
-    /// Each entry follows the same format as `filter`: `module_name` or
-    /// `module_name::function_name`. Exclusions take precedence over the filter scope.
-    exclude: Option<Vec<String>>,
+    /// Each entry follows the same format as `filter`.
+    /// Exclusions take precedence over the filter scope.
+    pub(super) exclude: Option<Vec<String>>,
     /// Solver timeout per verification condition, in seconds. Default: 10. Maximum: 60.
-    timeout: Option<usize>,
+    pub(super) timeout: Option<usize>,
     /// If set, generate an independent verification condition for each
     /// assertion in a function instead of a single combined condition. Can
     /// help when a function mixes provable-but-hard asserts with asserts
     /// that produce counterexamples; useful for diagnosing per-function
     /// timeouts.
-    split_vcs_by_assert: Option<bool>,
+    pub(super) split_vcs_by_assert: Option<bool>,
     /// Maximum number of counterexamples reported per verification condition.
     /// The request also has a fixed aggregate diagnostic limit.
-    error_limit: Option<usize>,
+    pub(super) error_limit: Option<usize>,
 }
 
 const DEFAULT_VC_TIMEOUT: usize = 10;
@@ -212,7 +214,7 @@ impl FlowSession {
         description = "Verify Move specifications using the Move Prover",
         annotations(read_only_hint = false, destructive_hint = false)
     )]
-    async fn move_package_verify(
+    pub(super) async fn move_package_verify(
         &self,
         Parameters(params): Parameters<MovePackageVerifyParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -304,6 +306,8 @@ impl FlowSession {
                         None,
                     ));
                 }
+                // Apply the same ambiguity check as inclusion filters.
+                resolve_filter(data.env(), Some(entry))?;
             }
 
             let exclude_entries: Vec<&str> = exclude
