@@ -11,10 +11,9 @@ is measured by the check ledger of
 
 ## Status (checkpoint 2026-09-08)
 
-Implemented in `leaner-ir`, suspended at this checkpoint with the tree
-consistent: builds, the `DenotePerformance` gate, and the check ledger of
-[`test-organization.md`](test-organization.md) (33 of 61 files exact) are
-as recorded there. The agreement theorem is **assumed**, by the user's
+Implemented in `leaner-ir`: builds, the `DenotePerformance` gate, and the
+check ledger of [`test-organization.md`](test-organization.md) (46 of 61
+files exact on 2026-09-10) are as recorded there. The agreement theorem is **assumed**, by the user's
 decision, until its induction is done.
 
 ### Modules
@@ -38,6 +37,29 @@ decision, until its induction is done.
 
 ### Carried
 
+Vectors (2026-09-10): `NTy.vector`, whose carrier is the bounded
+`SpecVector` (length below 2^64) that the spec twins already use, so a
+vector's length is a certificate at a leaf as an integer's range is, and
+`length` is exact; element places with literal, local, or from-end
+positions in a path (`Proj.index`), vector literals, `index` with its
+abort, the bounds check the lowering emits before an element place,
+`push`, `insert`, `remove`; a construction that would exceed the bound is
+undefined, as the runtime value it produces is not representable.
+Loops carry a state invariant beside the local frame: the store and
+registry when the body has no global effect, the pending set when it has
+no call, and the loan discipline from the entry state, so a body that
+mints loans still closes; a reference local the body only writes through
+keeps its loan.
+
+An unspecified callee (no `spec` block) is inlined: the caller's proof
+reasons over the callee's compiled body through the agreement theorem
+(`wp_calleeMeaning_of_compiled`), never over a summary; a callee with a
+contract must be verified first. Structural equality of a vector against
+a spec literal is carried: the codecs are tight (`NTy.encode_eq_iff`, by
+induction over the type family), so an encoding equation is a decoding
+equation in both directions, and `eqb` decides equality on reference-free
+types (`NTy.eqb_iff`).
+
 Scalars and checked arithmetic, comparisons, Boolean operations, unsigned
 `&`, checked shifts and casts, constants, `if`, `let`, blocks, `abort`,
 `assert`, early `return`, assignment, `break`/`continue` (labeled too),
@@ -55,8 +77,11 @@ writing back by key). A rejection names the construct.
 
 ### Not carried
 
-`|`, `^`, signed bitwise, vectors (every "type of a local is not carried"
-row of the ledger), generic calls, constructors, and fields, recursion
+`|`, `^`, signed bitwise, `bytes` and fixed-length vectors, vector
+`swap`/`contains`/`indexOf`/`slice`/`concat`, generic calls,
+constructors, and fields, recursion (needs the
+fixpoint characterization of the big-step meaning, a theorem of the same
+family as the agreement)
 (a callee is verified before its callers; `drain`, `recursive_choose`),
 unspecified pure callees used as summaries (`plus_one`), a mutable borrow
 outside a binding or a call argument (`reborrow`), returned references,
@@ -84,7 +109,24 @@ assert names of the retired route.
 - Inventories are simp sets, never explicit lists (0.8M heartbeats per
   call otherwise). `HList` and `variantCarrier` are not reducible, so
   every lemma whose right-hand side builds a row value is stated at the
-  row type, never at the product it unfolds to.
+  row type, never at the product it unfolds to. One spelling per
+  encoding: a lemma's right-hand side encodes through `τ.codec.encode`,
+  never through `NTy.encode τ`, so element-wise encodings of a vector
+  meet the same normal form from the callee's post and from a settle.
+- Lean 4.32's `simp_all` drops a hypothesis it modified in two rounds
+  (its earlier form stays in the rule set and rewrites the hypothesis's
+  own conjuncts to `True`); the closer uses a vendored copy with the
+  bookkeeping corrected (`leaner_simp_all`, `Denote/SimpAll.lean`).
+- A callee's post `encode x = literal` is read as `decode? literal = some
+  x` (a fact the leaf adds), so the literal names the value; the leaf
+  runs without error recovery, since `all_goals` under recovery logs a
+  failing alternative and aborts instead of letting `first` move on.
+- The general leaf is one pipeline (`leaner_denote_pipeline`), each
+  stage over the previous stage's goals; a round collects facts, splits
+  and substitutes, then rewrites, so what a substitution exposes is
+  rewritten before the next decision; state facts are retried after every
+  round. A literal integer decoding is decided outright by a pre-simproc
+  (`decodeIntegerLiteral`), so no conditional is left for a split.
 - Rows are a mutual family `NTy`/`NRow`/`NRows` (a nested inductive cannot
   derive decidable equality); an enum carries the distinctness of its
   variant names. Aggregate arguments are introduced destructured, one goal
@@ -96,11 +138,12 @@ else is admitted.
 
 ### Next
 
-In order: resource invariants and loops over live global borrows (D2),
-vectors, recursion and unspecified callee summaries, returned references,
-generics (D3), then the retirement of the previous routes' generators,
-tests, and `Performance.exp` (D4). Discharging the axiom blocks nothing
-else and is scheduled with D4.
+In order: recursion, returned references, generics (D3), then the retirement of the previous routes'
+generators, tests, and `Performance.exp` (D4). Cost: a storage target with
+two global borrows and invariants costs 100M heartbeats, three quarters of
+it one `simp_all` pass per leaf over the shared context; sharing that
+pass across the leaves of one target is the next cost item. Discharging
+the axiom blocks nothing else and is scheduled with D4.
 
 ## What does not change
 
@@ -315,7 +358,7 @@ obligation exists; the gate below measures it.
 |---|---|---|---|
 | D0 | **DONE 2026-09-08**, agreement assumed (named axiom, user decision) | `denote` and `denote_agrees` for the straight-line subset `Denotation.lean` already covers (values, locals, checked arithmetic, assignment, return, monomorphic calls). | Theorem closed without `sorry`; `Language/Arithmetic` and `Language/Integers` verify through definitional unfolding; per-target unfold and closing cost recorded in `Performance.exp` and compared against v0's per-function times, with the unfold reported separately. |
 | D1 | **DONE 2026-09-08** except recursion (`drain`, `recursive_choose`) | Control: branches, enum matches with payloads, structured loops with invariants, recursion. | `Verification/Loops`, `LoopInvariants`, `Calls`, `Callees`, the recursive `Corpus` targets, `Language/Loops`, `Enums`, `EnumPatterns`, `ControlForms` pass. |
-| D2 | **IN PROGRESS** (checkpoint 2026-09-08): references and storage carried (`Account`, `Storage`, `Read`, `Prophecies`, `Corpus`, `Normalized` pass); open: resource invariants, loops over a live global borrow, returned references, vector loans | Storage and references: typed global family, scoped borrows, prophecies, returned references. | `Account`, `GlobalBorrows`, `GlobalInv`, `References`, `Loans`, `Prophecies`, `Storage` pass. |
+| D2 | **IN PROGRESS** (2026-09-10): references, storage, resource invariants, loops over live borrows, and vectors carried (`Account`, `Storage`, `GlobalInv` at the driver cap, `GlobalBorrows`, `Loans`, `LoopInvariants` pass); open: returned references, recursion | Storage and references: typed global family, scoped borrows, prophecies, returned references. | `Account`, `GlobalBorrows`, `GlobalInv`, `References`, `Loans`, `Prophecies`, `Storage` pass. |
 | D3 | open | Generics (V4, carried) and the Rust profile denotations. | `Language/Generics`, `Verification/Generics`, `GenericScalarCalls`, Rust-profile fixtures pass. |
 | D4 | open | Retirement: delete per-target `computationRepresents` generation, the `LeanerLang/Native*` generators, the `Proofs/*Agreement.lean` modules not consumed by `denote_agrees`, and `Certify.lean`'s shape routing. | Full Check audit at the unchanged caps; `Performance.exp` at or below the v0-parity targets; Move and Rust suites green. |
 

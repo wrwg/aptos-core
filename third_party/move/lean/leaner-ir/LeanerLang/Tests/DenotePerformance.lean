@@ -224,6 +224,51 @@ leaner module 0x45::denote_perf_aggregates where
       | _ => false
   verify total
 
+leaner module 0x46::denote_perf_storage where
+  struct Counter has Key where
+    value : u64
+
+  struct Ledger has Key where
+    total : u64
+
+  spec module where
+    invariant forall (a : Address),
+      0 < global<Counter>(a).value
+    invariant [update] forall (a : Address),
+      old(global<Counter>(a).value) <= global<Counter>(a).value
+
+  public fun value_of(addr : Address) -> u64 := Counter[addr].value
+  spec value_of where
+    aborts_if !exists<Counter>(addr)
+    ensures result == global<Counter>(addr).value
+  verify value_of
+
+  public entry fun increment(addr : Address) -> Unit := do
+    let value := &mut Counter[addr].value
+    *value := *value + 1
+  spec increment where
+    requires exists<Counter>(addr)
+    modifies global<Counter>(addr)
+    ensures global<Counter>(addr).value == old(global<Counter>(addr).value) + 1
+    aborts_if old(global<Counter>(addr).value) + 1 > 18446744073709551615
+  verify increment
+
+  public entry fun record(addr : Address, amount : u64) -> Unit := do
+    let value := &mut Counter[addr].value
+    *value := *value + amount
+    let total := &mut Ledger[addr].total
+    *total := *total + amount
+  spec record where
+    requires exists<Counter>(addr) && exists<Ledger>(addr)
+    modifies global<Counter>(addr)
+    modifies global<Ledger>(addr)
+    ensures global<Counter>(addr).value ==
+        old(global<Counter>(addr).value) + amount &&
+      global<Ledger>(addr).total == old(global<Ledger>(addr).total) + amount
+    aborts_if old(global<Counter>(addr).value) + amount > 18446744073709551615 ||
+      old(global<Ledger>(addr).total) + amount > 18446744073709551615
+  verify record
+
 #leaner_perf "LeanerLang/Tests/DenotePerformance.exp"
 
 end LeanerLang.Tests.DenotePerformance

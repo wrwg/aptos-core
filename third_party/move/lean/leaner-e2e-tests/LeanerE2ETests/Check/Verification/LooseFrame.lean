@@ -54,7 +54,6 @@ example (initial final : LeanerIR.RuntimeState) (addr other : String)
       #[.address addr] initial final) :
     final.globals.lookup («0x42».loose_frame.Counter.key (.address other)) =
       initial.globals.lookup («0x42».loose_frame.Counter.key (.address other)) := by
-  simp only [«0x42».loose_frame.bump.rawContract] at frame
   rcases frame with ⟨⟨actual, parameters, preserves⟩, _⟩
   have same : addr = actual := by
     simpa only [Array.mk.injEq, List.cons.injEq, LeanerIR.RuntimeValue.address.injEq,

@@ -1,7 +1,6 @@
 # Test organization and check ledger
 
-Updated 2026-09-08 (checkpoint of the denotation route,
-[`denotation.md`](denotation.md)). This is the ledger of the acceptance
+Updated 2026-09-10 (denotation route, [`denotation.md`](denotation.md)). This is the ledger of the acceptance
 fixtures under
 [`leaner-e2e-tests/LeanerE2ETests/Check/`](../leaner-e2e-tests/LeanerE2ETests/Check/):
 which pass exactly, which do not, and why. Chronology and the mappings of
@@ -10,9 +9,10 @@ the original v0 cases live in
 
 ## Current result
 
-**35 of 61 Check files pass exactly; 26 fail.** Every failure is a
-construct the denotation does not yet carry or a fixture that still asserts
-names of a retired route; none is a diagnostics mismatch. A file passes
+**46 of 61 Check files pass exactly; 15 fail.** Every failure is a
+construct the denotation does not yet carry, a fixture that still asserts
+names of a retired route, or a fixture whose re-import round trip fails
+outside verification; none is a diagnostics mismatch. A file passes
 when its whole output matches the adjacent `.exp` at the driver's caps
 (180k verification heartbeats per target); a file with one failing target
 fails, however many targets it proves.
@@ -20,8 +20,8 @@ fails, however many targets it proves.
 | Gate | Result | Note |
 |---|---|---|
 | `leaner-ir` build | PASS | `LeanerLang` and the `Denote` modules. |
-| `DenotePerformance` gate | PASS | Loop targets within 6% of the baseline; no target regressed past its budget. |
-| `leaner-ir` `lake test` | FAIL (38 of 215 roots) | 35 `LeanerLang.Tests.Native*` roots and `Performance` assert artifacts of the retired routes (their removal is D4); `Frontend` needs vectors (`replace`); `CompositionPerformance` is a resource-composition residual. Every `LeanerIR.Tests.*` root passes. |
+| `DenotePerformance` gate | PASS (baseline regenerated 2026-09-10) | Loops 10–12% cheaper, scalars 8–22% dearer than the checkpoint; storage targets added (`record` 109M). |
+| `leaner-ir` `lake test` | FAIL (38 of 215 roots, checkpoint result; not rerun) | 35 `LeanerLang.Tests.Native*` roots and `Performance` assert artifacts of the retired routes (their removal is D4); `Frontend` needs vectors (`replace`); `CompositionPerformance` is a resource-composition residual. Every `LeanerIR.Tests.*` root passes. |
 | `leaner-move`, `leaner-rust` builds | PASS | |
 | `leaner-e2e-tests` `lake build` | FAIL (unrelated) | The `mono-move-lean-link` Rust crate does not compile (E0061); the ledger was taken per file with `lake env lean` at the driver's caps. |
 
@@ -29,12 +29,12 @@ The remaining failure classes, by size:
 
 | Class | Files | What is missing |
 |---|---|---|
-| Vectors | 11 | Vector types, element loans, and vector primitives are not carried. |
 | Generics | 4 | Generic locals, calls, constructors, and fields are not carried. |
-| Resource invariants and sequential resource effects | 5 | `GlobalInv`, `CrossInv`, `LooseFrame`, `ResourceComposition`, and `Language/Loops` (`drain`) leave residual obligations. |
-| Recursion and unspecified callees | 2 | A callee is verified before its callers; recursion and pure helpers used as summaries are not carried. |
-| Returned and free-standing references | 2 | A mutable borrow outside a binding or call argument, and returned references. |
+| Re-import round trips | 3 | `ControlForms`, `VectorBounds`, `Negative/Lowering` verify but their printed source does not re-import (`LEANER-BORROW-TYPE`), a printer issue outside verification; `VectorBounds` also has a `move` of a place at an unexpected type. |
+| Recursion | 2 | A callee is verified before its callers; a recursive function needs the fixpoint characterization of its big-step meaning. |
+| Returned and free-standing references | 2 | A mutable borrow outside a binding or call argument, and returned references (`References`, `Negative/ReturnedMutRefs`). |
 | Retired-route assertions | 2 | `Verification/Typed` and `Verification/EnumRefs` assert artifacts of the retired route. |
+| Fixture-local cap | 1 | `GlobalInv` verifies at the driver's cap but sets its own 50k cap, which `record` (two global borrows under invariants) exceeds. |
 | Rust profile | 1 | The Rust profile's primitives have no denotation yet. |
 
 ## Per-file status
@@ -43,7 +43,7 @@ Each name is a `.lean` file under `Check/`. PASS means the entire fixture
 matches its baseline; a PASS with no `verify` target is execution or
 diagnostics coverage only, as noted.
 
-### Language (19 files: 13 pass, 6 fail)
+### Language (19 files: 17 pass, 2 fail)
 
 | File | Status | Remaining problem |
 |---|---|---|
@@ -51,52 +51,52 @@ diagnostics coverage only, as noted.
 | `Language/Addresses` | PASS | |
 | `Language/Arithmetic` | PASS | |
 | `Language/Attributes` | PASS | No verification targets. |
-| `Language/ControlForms` | FAIL | `index_arithmetic` has a vector local. |
+| `Language/ControlForms` | FAIL | Every target verifies; the printed source does not re-import. |
 | `Language/EmptyModule` | PASS | No verification targets. |
 | `Language/EnumPatterns` | PASS | Nested enums verify at seven goals' cost. |
-| `Language/EnumPayloads` | FAIL | Vector locals and vector callee parameters. |
+| `Language/EnumPayloads` | PASS | |
 | `Language/EnumRefs` | PASS | Execution only, no `verify`. |
 | `Language/Enums` | PASS | |
 | `Language/Generics` | FAIL | Every target has a generic local. |
 | `Language/Integers` | PASS | |
-| `Language/Literals` | FAIL | `classify_bytes` has a vector local. |
-| `Language/Loops` | FAIL | `drain` loops over a live global borrow; residual obligation. |
+| `Language/Literals` | PASS | |
+| `Language/Loops` | PASS | |
 | `Language/PositionalStructs` | PASS | |
 | `Language/Signed` | PASS | |
 | `Language/Tuples` | PASS | |
 | `Language/VectorOperations` | PASS | |
-| `Language/Vectors` | FAIL | Vector results, locals, and the `length` primitive. |
+| `Language/Vectors` | PASS | |
 
-### Verification (30 files: 13 pass, 17 fail)
+### Verification (30 files: 20 pass, 10 fail)
 
 | File | Status | Remaining problem |
 |---|---|---|
 | `Verification/Aborts` | PASS | Includes the intended false-contract rejection. |
 | `Verification/Account` | PASS | |
 | `Verification/BorrowCertificates` | PASS | Certificate assertions, no `verify`. |
-| `Verification/Callees` | FAIL | Unspecified pure callees (`plus_one`, `pure_predicate`) and recursion (`drain`). |
+| `Verification/Callees` | FAIL | `drain` and `call_drain` are recursive; unspecified pure callees are inlined and pass. |
 | `Verification/Calls` | FAIL | `recursive_choose` is recursive. |
 | `Verification/Composition` | PASS | |
-| `Verification/CorePrimitives` | FAIL | `vector_get`, `vector_set`. |
+| `Verification/CorePrimitives` | PASS | |
 | `Verification/Corpus` | PASS | |
-| `Verification/CrossInv` | FAIL | Cross-resource invariant leaves a residual obligation. |
+| `Verification/CrossInv` | PASS | |
 | `Verification/EnumRefs` | FAIL | The fixture builds enum twins with anonymous constructors of the retired route. |
 | `Verification/Generics` | FAIL | Generic locals and calls. |
 | `Verification/GenericScalarCalls` | FAIL | Generic calls. |
 | `Verification/GenericStorage` | FAIL | Generic fields have no carrier; generic calls. |
-| `Verification/GlobalBorrows` | FAIL | `bump_first`, `bump_left` borrow vector elements; the rest passes. |
-| `Verification/GlobalInv` | FAIL | Resource invariant: preparation times out at `whnf`. |
+| `Verification/GlobalBorrows` | PASS | |
+| `Verification/GlobalInv` | FAIL | Verifies at the driver's cap; the fixture's own 50k cap is below `record`'s cost. |
 | `Verification/Increment` | PASS | |
 | `Verification/Invariants` | PASS | |
-| `Verification/Loans` | FAIL | `extend`, `independent_element`, `splice` have vector locals. |
-| `Verification/LoopInvariants` | FAIL | `clear` mutates a vector in a loop; `count_to`, `sum_ones` pass. |
+| `Verification/Loans` | PASS | |
+| `Verification/LoopInvariants` | PASS | |
 | `Verification/Loops` | PASS | |
-| `Verification/LooseFrame` | FAIL | Resource-effect target leaves a residual obligation. |
+| `Verification/LooseFrame` | PASS | Its hand proof no longer unfolds the raw contract by hand. |
 | `Verification/Normalized` | PASS | |
 | `Verification/Prophecies` | PASS | |
 | `Verification/Read` | PASS | |
 | `Verification/References` | FAIL | `reborrow` borrows outside a binding or call argument; returned references. |
-| `Verification/ResourceComposition` | FAIL | Sequential resource writes leave a residual obligation. |
+| `Verification/ResourceComposition` | PASS | |
 | `Verification/Rust` | FAIL | The Rust profile's `add` has no denotation. |
 | `Verification/SpecLogicalArithmetic` | PASS | |
 | `Verification/Storage` | PASS | |
@@ -112,14 +112,14 @@ A correct rejection does not make a file pass if its positive control fails.
 | `Negative/Borrows` | PASS | |
 | `Negative/IntrinsicUnsupported` | PASS | |
 | `Negative/LoopInvariants` | PASS | Baseline names the unestablished invariant at entry and at an iteration. |
-| `Negative/Lowering` | FAIL | Positive controls `receiver_get`, `two_reads`, `receiver_insert` have vector locals. |
+| `Negative/Lowering` | FAIL | Every target verifies; the printed source does not re-import. |
 | `Negative/ReturnedMutRefs` | FAIL | The parameter-derived returned reference leaves a residual obligation. |
 | `Negative/Specifications` | PASS | |
 | `Negative/Surface` | PASS | |
 | `Negative/Verification` | PASS | |
 | `Negative/WrongIncrement` | PASS | |
 | `PreparationRetry` | PASS | |
-| `VectorBounds` | FAIL | Every target has a vector local. |
+| `VectorBounds` | FAIL | `rhs_abort_before_bounds` moves a place at an unexpected type; the printed source does not re-import. |
 
 ### Missing v0 fixtures
 

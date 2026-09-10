@@ -3,6 +3,7 @@
 
 import LeanerIR.Proofs.Denote.Agreement
 import LeanerIR.Proofs.Certify
+import LeanerIR.Proofs.Denote.SimpAll
 
 /-!
 # Closing the verification condition of a denotation
@@ -118,6 +119,39 @@ private partial def projectionSites (env : Environment) (e : Lean.Expr) : Array 
   | .mdata _ b | .proj _ _ b => here ++ projectionSites env b
   | _ => here
 
+/-- The native type an encoding function encodes, from its spelling: the
+typed `NTy.encode τ`, or the codec of a type. -/
+partial def codecType? (encoder : Lean.Expr) : Option Lean.Expr := do
+  if encoder.isAppOfArity ``LeanerIR.Proofs.Denote.NTy.encode 1 then return encoder.getArg! 0
+  guard (encoder.isAppOfArity ``LeanerIR.Proofs.Codec.encode 3)
+  codecOf (encoder.getArg! 2)
+where
+  codecOf (codec : Lean.Expr) : Option Lean.Expr := do
+    let scalar (name : Name) (τ : Name) : Option Lean.Expr :=
+      if codec.isConstOf name then some (mkConst τ) else none
+    if codec.isAppOfArity ``LeanerIR.Proofs.Denote.NTy.codec 1 then return codec.getArg! 0
+    if codec.isAppOfArity ``LeanerIR.Proofs.Codec.specInt 2 then
+      let width := codec.getArg! 0
+      guard (width.isAppOfArity ``LeanerIR.IntWidth.bits 1)
+      return mkAppN (mkConst ``LeanerIR.Proofs.Denote.NTy.int) #[width.getArg! 0, codec.getArg! 1]
+    if codec.isAppOfArity ``LeanerIR.Proofs.Codec.boundedVector 2 then
+      return mkApp (mkConst ``LeanerIR.Proofs.Denote.NTy.vector) (← codecOf (codec.getArg! 1))
+    if codec.isAppOfArity ``LeanerIR.Proofs.Codec.tuple 2 then
+      let row := codec.getArg! 1
+      guard (row.isAppOfArity ``LeanerIR.Proofs.Denote.rowCodec 1)
+      return mkApp (mkConst ``LeanerIR.Proofs.Denote.NTy.tuple) (row.getArg! 0)
+    if codec.isAppOfArity ``LeanerIR.Proofs.Denote.Codec.nominalRow 4 then
+      guard ((codec.getArg! 2).isAppOfArity ``Option.none 1)
+      let row := codec.getArg! 3
+      guard (row.isAppOfArity ``LeanerIR.Proofs.Denote.rowCodec 1)
+      return mkAppN (mkConst ``LeanerIR.Proofs.Denote.NTy.struct) #[codec.getArg! 1, row.getArg! 0]
+    scalar ``LeanerIR.Proofs.Codec.bool ``LeanerIR.Proofs.Denote.NTy.bool <|>
+      scalar ``LeanerIR.Proofs.Codec.address ``LeanerIR.Proofs.Denote.NTy.address <|>
+      scalar ``LeanerIR.Proofs.Codec.signer ``LeanerIR.Proofs.Denote.NTy.signer <|>
+      scalar ``LeanerIR.Proofs.Codec.string ``LeanerIR.Proofs.Denote.NTy.string <|>
+      scalar ``LeanerIR.Proofs.Codec.bytes ``LeanerIR.Proofs.Denote.NTy.bytes <|>
+      scalar ``LeanerIR.Proofs.Codec.unit ``LeanerIR.Proofs.Denote.NTy.unit
+
 /-- The facts a leaf needs beside its hypotheses: the bounds of every
 certified integer in context, and the bounds of every bit operation on
 them that the goal or a hypothesis mentions. -/
@@ -131,6 +165,8 @@ elab "leaner_denote_bounds" : tactic => do
       if decl.isImplementationDetail then continue
       let ty ← whnfR (← instantiateMVars decl.type)
       expressions := expressions.push (← instantiateMVars decl.type)
+      if ty.isAppOfArity ``LeanerIR.SpecVector 1 then
+        facts := facts.push (← mkAppM ``LeanerIR.SpecVector.bounded #[decl.toExpr])
       if ty.isAppOfArity ``LeanerIR.SpecInt 2 then
         let width := ty.getArg! 0
         if width.isAppOfArity ``LeanerIR.IntWidth.bits 1 then
@@ -146,6 +182,58 @@ elab "leaner_denote_bounds" : tactic => do
     for decl in ← getLCtx do
       if decl.isImplementationDetail then continue
       let ty ← instantiateMVars decl.type
+      -- An encoding equated to a runtime value names the native value it
+      -- decodes to, and one distinguished from it excludes that value.  A
+      -- proof that does not assemble is not a fact.
+      let equation := if ty.isAppOfArity ``LeanerIR.Proofs.Obligation 3 then ty.getArg! 2 else ty
+      if equation.isAppOfArity ``Not 1 && (equation.getArg! 0).isAppOfArity ``Eq 3 then
+        let inner := equation.getArg! 0
+        let lhs := inner.getArg! 1
+        let rhs := inner.getArg! 2
+        -- Distinct certified values differ in their fields.
+        let carrier ← whnfR (inner.getArg! 0)
+        if carrier.isAppOfArity ``LeanerIR.SpecInt 2 then
+          facts := facts.push (← mkAppM ``LeanerIR.Proofs.Denote.SpecInt.val_ne_of_ne #[decl.toExpr])
+        else if carrier.isAppOfArity ``LeanerIR.SpecVector 1 then
+          facts := facts.push
+            (← mkAppM ``LeanerIR.Proofs.Denote.SpecVector.values_ne_of_ne #[decl.toExpr])
+        let attempt (fact : MetaM Lean.Expr) : MetaM (Option Lean.Expr) :=
+          try pure (some (← fact)) catch _ => pure none
+        let mapped? (e : Lean.Expr) : Option Lean.Expr :=
+          if e.isAppOfArity ``Array.map 4 then codecType? (e.getArg! 2) else none
+        let fact ← if lhs.isAppOfArity ``LeanerIR.Proofs.Denote.NTy.encode 2 then
+            attempt (mkAppM ``LeanerIR.Proofs.Denote.NTy.decode?_ne_of_encode_ne #[decl.toExpr])
+          else if let some τ := mapped? lhs then
+            attempt (mkAppOptM ``LeanerIR.Proofs.Denote.NTy.decode?_vector_ne_of_map_ne
+              #[τ, none, none, decl.toExpr])
+          else pure none
+        if let some fact := fact then facts := facts.push fact
+      if equation.isAppOfArity ``Eq 3 then
+        let proof ← if ty.isAppOfArity ``LeanerIR.Proofs.Obligation 3 then
+            mkAppM ``Iff.mp #[← mkAppOptM ``LeanerIR.Proofs.Obligation_iff
+              #[ty.getArg! 0, ty.getArg! 1, equation], decl.toExpr]
+          else pure decl.toExpr
+        let lhs := equation.getArg! 1
+        let rhs := equation.getArg! 2
+        let isRuntime (e : Lean.Expr) := match e.getAppFn with
+          | .const name _ => name.getPrefix == ``LeanerIR.RuntimeValue
+          | _ => false
+        let mapped? (e : Lean.Expr) : Option Lean.Expr :=
+          if e.isAppOfArity ``Array.map 4 then codecType? (e.getArg! 2) else none
+        let attempt (fact : MetaM Lean.Expr) : MetaM (Option Lean.Expr) :=
+          try pure (some (← fact)) catch _ => pure none
+        let decodeFact ← if lhs.isAppOfArity ``LeanerIR.Proofs.Denote.NTy.encode 2 && isRuntime rhs then
+            attempt (mkAppM ``LeanerIR.Proofs.Denote.NTy.decode?_of_encode #[proof])
+          else if rhs.isAppOfArity ``LeanerIR.Proofs.Denote.NTy.encode 2 && isRuntime lhs then
+            attempt (mkAppM ``LeanerIR.Proofs.Denote.NTy.decode?_of_encode #[← mkEqSymm proof])
+          else if let some τ := mapped? lhs then
+            attempt (mkAppOptM ``LeanerIR.Proofs.Denote.NTy.decode?_vector_of_map
+              #[τ, none, none, proof])
+          else if let some τ := mapped? rhs then
+            attempt (mkAppOptM ``LeanerIR.Proofs.Denote.NTy.decode?_vector_of_map
+              #[τ, none, none, ← mkEqSymm proof])
+          else pure none
+        if let some fact := decodeFact then facts := facts.push fact
       let (negated, fits) := if ty.isAppOfArity ``Not 1 then (true, ty.getArg! 0) else (false, ty)
       unless fits.isAppOfArity ``LeanerIR.IntegerValueFits 3 do continue
       let width := fits.getArg! 0
@@ -174,12 +262,25 @@ elab "leaner_denote_bounds" : tactic => do
               then ``LeanerIR.SpecInt.signed_bounds else ``LeanerIR.SpecInt.unsigned_bounds
             facts := facts.push (mkApp2 (mkConst lemma) (width.getArg! 0) site)
     pure facts
+  -- A fact already in context is not added again.
   let mut goal := goal
+  let mut known ← goal.withContext do
+    (← getLCtx).foldlM (init := (#[] : Array Lean.Expr)) fun known decl => do
+      if decl.isImplementationDetail then pure known
+      else pure (known.push (← instantiateMVars decl.type))
   for proof in facts do
-    let type ← goal.withContext (inferType proof)
+    let type ← goal.withContext (instantiateMVars (← inferType proof))
+    if known.contains type then continue
+    known := known.push type
     let asserted ← goal.assert `bounds type proof
     let (_, next) ← asserted.intro1P
     goal := next
+    -- The projections of literal values in the fact reduce, so that a
+    -- decision procedure reads the value, not the projection.
+    setGoals [goal]
+    let name := mkIdent `bounds
+    evalTactic (← `(tactic| try dsimp only at $name:ident))
+    goal ← getMainGoal
   replaceMainGoal [goal]
 /-- Clear every hypothesis that speaks about computations rather than
 values: the loop hypotheses and recursive iterations a leaf never needs. -/
@@ -263,6 +364,24 @@ private def frontierProof? (statement : Lean.Expr) : TacticM (Option Lean.Expr) 
     restoreState saved
     if leaner.denoteDebug.get (← getOptions) then
       logInfo m!"frontier not established: {statement}: {failure.toMessageData}"
+    return none
+
+/-- An equation proved by rewriting with the given hypotheses and the
+normal forms, or nothing. -/
+private def equationProof? (statement : Lean.Expr) (rewrites : Array Lean.Expr) :
+    TacticM (Option Lean.Expr) := do
+  let proof ← mkFreshExprMVar statement
+  let saved ← saveState
+  let goals ← getGoals
+  try
+    setGoals [proof.mvarId!]
+    let lemmas ← rewrites.mapM fun rewrite => do
+      `(Lean.Parser.Tactic.simpLemma| $(← Lean.Elab.Term.exprToSyntax rewrite):term)
+    evalTactic (← `(tactic| (first | rfl | (simp only [$lemmas,*, lir_denote_norm]; done))))
+    setGoals goals
+    return some (← instantiateMVars proof)
+  catch _ =>
+    restoreState saved
     return none
 
 /-- The discipline from a state to a record built on it: the registry is
@@ -426,6 +545,57 @@ private partial def stateFact? (facts : Array (Lean.Expr × Lean.Expr)) (target 
                   (← mkAppM ``LeanerIR.RuntimeState.nextLoan #[calleeFinal])) | continue
               return some (← mkAppM ``LeanerIR.Proofs.Denote.LoanDiscipline.through_global_loan
                 #[registryEq, minted, live, proof, retiredRegistry, retiredFrontier])
+    -- The same retirement once its registry has been rewritten through an
+    -- equation on the state the discipline fact reaches, as a loop
+    -- invariant states it: `final` keeps that state's frontier.
+    if final.isAppOfArity ``LeanerIR.RuntimeState.mk 4 then
+      let frontier := final.getArg! 2
+      if frontier.isAppOfArity ``LeanerIR.RuntimeState.nextLoan 1 then
+        let reached := frontier.getArg! 0
+        let debug := leaner.denoteDebug.get (← getOptions)
+        let note (what : String) : TacticM Unit := do
+          if debug then logInfo m!"rewritten retirement: {what}"
+        for (proof, type) in facts do
+          if type.isAppOfArity ``LeanerIR.SemanticOperations.LoanDiscipline 2 then
+            unless ← isDefEq (type.getArg! 1) reached do
+              note "reached differs"; continue
+            let registered := type.getArg! 0
+            let some (loan, key) := registeredLoan? registered
+              | note "no registration"; continue
+            let some base := baseState? registered
+              | note "no base"; continue
+            unless ← isDefEq base initial do
+              note "base differs"; continue
+            let registryEquations ← facts.filterMapM fun (fact, factType) => do
+              unless factType.isAppOfArity ``Eq 3 do return none
+              let lhs := factType.getArg! 1
+              unless lhs.isAppOfArity ``LeanerIR.RuntimeState.globalLoans 1 do return none
+              if ← isDefEq (lhs.getArg! 0) reached then pure (some fact) else pure none
+            if registryEquations.isEmpty then
+              note "no registry equation"; continue
+            let registryEq ← mkEqRefl (← mkAppM ``LeanerIR.RuntimeState.globalLoans #[registered])
+            let some minted ← frontierProof? (← mkAppM ``LE.le
+                #[← mkAppM ``LeanerIR.RuntimeState.nextLoan #[initial], loan])
+              | note "minted"; continue
+            let some live ← frontierProof? (← mkAppM ``LT.lt
+                #[loan, ← mkAppM ``LeanerIR.RuntimeState.nextLoan #[registered]])
+              | note "live"; continue
+            let some retiredRegistry ← equationProof? (← mkEq
+                (← mkAppM ``LeanerIR.RuntimeState.globalLoans #[final])
+                (← mkAppM ``LeanerIR.SemanticOperations.removeGlobalLoan
+                  #[← mkAppM ``LeanerIR.RuntimeState.globalLoans #[reached], loan]))
+                registryEquations
+              | note "registry equation not established"; continue
+            let some retiredFrontier ← frontierProof? (← mkEq
+                (← mkAppM ``LeanerIR.RuntimeState.nextLoan #[final])
+                (← mkAppM ``LeanerIR.RuntimeState.nextLoan #[reached]))
+              | note "frontier"; continue
+            -- The states are given: a projection alone would let the
+            -- unifier pick another state with the same registry.
+            let result ← mkAppOptM ``LeanerIR.Proofs.Denote.LoanDiscipline.through_global_loan
+              #[initial, registered, reached, final, loan, key, registryEq, minted, live, proof,
+                retiredRegistry, retiredFrontier]
+            return some result
     return none
   return none
 
@@ -459,7 +629,19 @@ elab "leaner_denote_state" : tactic => do
   unless target.isAppOfArity ``LeanerIR.SemanticOperations.FreshGlobalLoanIds 1 ||
       target.isAppOfArity ``LeanerIR.SemanticOperations.LoanDiscipline 2 do
     throwError "not a state fact"
-  let some proof ← goal.withContext do stateFact? (← contextFacts) target 8
+  let debug := leaner.denoteDebug.get (← getOptions)
+  let found ← goal.withContext do
+    let facts ← contextFacts
+    if debug then
+      let heads := facts.map fun (_, type) => match type.getAppFn with
+        | .const name _ => name
+        | _ => `other
+      logInfo m!"state fact search over {heads.toList} for {target.getAppFn.constName?}"
+    try stateFact? facts target 8
+    catch failure =>
+      if debug then logInfo m!"state fact search failed: {failure.toMessageData}"
+      pure none
+  let some proof := found
     | throwError "no discipline chain closes the goal"
   goal.assign proof
   replaceMainGoal []
@@ -625,14 +807,82 @@ elab "leaner_denote_split_hypotheses" : tactic => do
         let ty ← instantiateMVars decl.type
         if ty.isAppOfArity ``And 2 || ty.isAppOfArity ``Exists 2 then return some decl.fvarId
         if (← whnfD ty).isAppOfArity ``Prod 2 then return some decl.fvarId
+        -- A pair equated to a pair, whatever row type the equation is stated
+        -- at, splits into its components.
+        if ty.isAppOfArity ``Eq 3 then
+          if (ty.getArg! 1).isAppOfArity ``Prod.mk 4 then
+            if (ty.getArg! 2).isAppOfArity ``Prod.mk 4 then return some decl.fvarId
         return none
     if let some fvarId := conjunction then
+      let isPairEquation ← goal.withContext do
+        let ty ← instantiateMVars (← fvarId.getType)
+        pure (if ty.isAppOfArity ``Eq 3 then (ty.getArg! 1).isAppOfArity ``Prod.mk 4 else false)
+      if isPairEquation then
+        match ← Lean.Meta.injection goal fvarId with
+        | Lean.Meta.InjectionResult.subgoal subgoal _ _ =>
+            goal := subgoal
+            progress := true
+        | Lean.Meta.InjectionResult.solved => break
+      else
       let subgoals ← goal.cases fvarId
       match subgoals with
       | #[subgoal] =>
           goal := subgoal.mvarId
           progress := true
       | _ => break
+    else
+      -- An array equated through its list is substituted as the array of
+      -- that list.
+      let listEquation ← goal.withContext do
+        (← getLCtx).findDeclM? fun decl => do
+          if decl.isImplementationDetail then return none
+          let ty ← instantiateMVars decl.type
+          unless ty.isAppOfArity ``Eq 3 do return none
+          let lhs := ty.getArg! 1
+          let rhs := ty.getArg! 2
+          let asList (side other : Lean.Expr) (symm : Bool) : Option (Lean.LocalDecl × Bool) :=
+            if side.isAppOfArity ``Array.toList 2 then
+              match side.getArg! 1 with
+              | .fvar xs => if other.containsFVar xs then none else some (decl, symm)
+              | _ => none
+            else none
+          return asList lhs rhs false <|> asList rhs lhs true
+      match listEquation with
+      | some (decl, symm) =>
+          let (equation, asserted) ← goal.withContext do
+            let h ← if symm then mkEqSymm decl.toExpr else pure decl.toExpr
+            let proof ← mkAppM ``LeanerIR.Proofs.Denote.array_eq_of_toList_eq #[h]
+            let asserted ← goal.assert `arrayEq (← inferType proof) proof
+            asserted.intro1P
+          goal ← asserted.withContext (Lean.Meta.subst asserted equation)
+          progress := true
+      | none => pure ()
+  replaceMainGoal [goal]
+
+/-- Substitute every hypothesis equating a local variable to a term, by
+syntactic shape alone: no hypothesis is unfolded to find one. -/
+elab "leaner_denote_subst_vars" : tactic => do
+  if (← getGoals).isEmpty then return
+  let mut goal ← getMainGoal
+  let mut progress := true
+  while progress do
+    progress := false
+    let equation ← goal.withContext do
+      (← getLCtx).findDeclM? fun decl => do
+        if decl.isImplementationDetail then return none
+        let ty ← instantiateMVars decl.type
+        unless ty.isAppOfArity ``Eq 3 do return none
+        let lhs := ty.getArg! 1
+        let rhs := ty.getArg! 2
+        let substitutable (x : Lean.Expr) (other : Lean.Expr) : Bool :=
+          match x with
+          | .fvar id => !other.containsFVar id
+          | _ => false
+        if substitutable lhs rhs || substitutable rhs lhs then return some decl.fvarId
+        return none
+    if let some fvarId := equation then
+      goal ← goal.withContext (Lean.Meta.subst goal fvarId)
+      progress := true
   replaceMainGoal [goal]
 
 /-- Split a leaf goal into its cases: a conjunction into its parts, and a
@@ -657,23 +907,71 @@ elab "leaner_denote_split_goal" : tactic => do
   let goals ← (← getMainGoal).withContext (splitGoal (← getMainGoal))
   replaceMainGoal goals
 
-/-- Saturate a leaf's context: rewrite with every hypothesis, destructure
-what the rewriting exposes, substitute witnesses, and repeat while new
-hypotheses appear. -/
+/-- One saturation round: rewrite with every hypothesis, destructure what
+the rewriting exposes, and substitute witnesses. -/
+macro "leaner_denote_saturate_round" : tactic => `(tactic| (
+  all_goals leaner_denote_bounds
+  all_goals leaner_denote_split_hypotheses
+  all_goals leaner_denote_subst_vars
+  all_goals (try leaner_simp_all [lir_denote_norm])))
+
+/-- Saturate a leaf's context: rounds of rewriting while new hypotheses
+appear, after the round the leaf has already run. -/
 macro "leaner_denote_saturate" : tactic => `(tactic| (
-  try simp_all [lir_denote_norm]
-  leaner_denote_split_hypotheses
-  try subst_vars
-  try simp_all [lir_denote_norm]
-  leaner_denote_split_hypotheses
-  try subst_vars
-  try simp_all [lir_denote_norm]
-  leaner_denote_split_hypotheses
-  try subst_vars
-  try simp_all [lir_denote_norm]
-  leaner_denote_split_hypotheses
-  try subst_vars
-  try simp_all [lir_denote_norm]))
+  leaner_denote_saturate_round
+  leaner_denote_saturate_round
+  leaner_denote_saturate_round
+  leaner_denote_saturate_round))
+
+/-- `decide` on a closed goal only: on an open one the kernel evaluates
+the instance for as long as the goal is large, then fails anyway. -/
+elab "leaner_denote_decide" : tactic => do
+  let target ← instantiateMVars (← (← getMainGoal).getType)
+  if target.hasFVar then throwError "the goal is not closed"
+  evalTactic (← `(tactic| decide))
+
+/-- The general leaf: one pipeline, each stage over the previous stage's
+goals, so that a rewriting pass is never repeated for a later alternative. -/
+macro "leaner_denote_pipeline" : tactic => `(tactic| (
+  leaner_denote_subst_vars
+  leaner_denote_bounds
+  try simp (disch := omega) only [LeanerIR.Proofs.Obligation_iff, Nat.reduceAdd,
+    Int.reducePow, Int.reduceSub, Nat.reducePow, Nat.reduceSub, Int.tmod_eq_emod_of_nonneg,
+    Int.tdiv_eq_ediv_of_nonneg, lir_denote_norm] at *
+  first
+  | done
+  | omega
+  | (leaner_denote_saturate_round
+     all_goals (first
+       | done
+       | (leaner_denote_bounds; omega)
+       | leaner_denote_state
+       | (leaner_denote_saturate
+          all_goals (try (split <;> (try leaner_simp_all [lir_denote_norm])))
+          all_goals (try (split <;> (try leaner_simp_all [lir_denote_norm])))
+          all_goals leaner_denote_split_goal
+          leaner_denote_saturate_round
+          all_goals (first | leaner_denote_state | (leaner_denote_bounds; omega)))))))
+
+/-- An existential goal whose body some hypothesis states at a witness. -/
+elab "leaner_denote_witness" : tactic => do
+  let goal ← getMainGoal
+  goal.withContext do
+    let target ← instantiateMVars (← goal.getType)
+    unless target.isAppOfArity ``Exists 2 do throwError "not an existential"
+    let body := target.getArg! 1
+    for decl in ← getLCtx do
+      if decl.isImplementationDetail then continue
+      let witness ← mkFreshExprMVar (target.getArg! 0)
+      let saved ← saveState
+      if ← isDefEq (body.beta #[witness]) (← instantiateMVars decl.type) then
+        let proof ← mkAppOptM ``Exists.intro #[target.getArg! 0, body, ← instantiateMVars witness,
+          decl.toExpr]
+        goal.assign proof
+        replaceMainGoal []
+        return
+      restoreState saved
+    throwError "no hypothesis states the existential at a witness"
 
 /-- Decide one leaf. -/
 syntax "leaner_denote_leaf" : tactic
@@ -681,7 +979,11 @@ syntax "leaner_denote_leaf" : tactic
 macro_rules
   | `(tactic| leaner_denote_leaf) => `(tactic|
       (leaner_denote_clear_computations
+       -- Atomic hypotheses first: each is rewritten, used, and dropped on
+       -- its own.
+       leaner_denote_split_hypotheses
        first
+      | leaner_denote_witness
       | (simp only [LeanerIR.Proofs.Obligation_iff, Nat.reduceAdd, Int.reducePow, Int.reduceSub,
           Nat.reducePow, Nat.reduceSub]; done)
       | leaner_denote_state
@@ -691,28 +993,38 @@ macro_rules
          omega)
       | (simp only [LeanerIR.Proofs.Obligation_iff, Nat.reduceAdd, Int.reducePow, Int.reduceSub,
           Nat.reducePow, Nat.reduceSub]
-         decide)
-      | (try subst_vars
-         leaner_denote_bounds
-         try simp (disch := omega) only [LeanerIR.Proofs.Obligation_iff, Nat.reduceAdd,
-           Int.reducePow, Int.reduceSub, Nat.reducePow, Nat.reduceSub, Int.tmod_eq_emod_of_nonneg,
-           Int.tdiv_eq_ediv_of_nonneg, lir_denote_norm] at *
-         first
-         | done
-         | omega
-         | (simp_all [lir_denote_norm]; done)
-         | (simp_all [lir_denote_norm]
-            all_goals leaner_denote_split_hypotheses
-            all_goals (try subst_vars)
-            all_goals leaner_denote_bounds
-            all_goals omega)
-         | (leaner_denote_saturate
-            all_goals (try (split <;> (try simp_all [lir_denote_norm])))
-            all_goals (try (split <;> (try simp_all [lir_denote_norm])))
-            all_goals leaner_denote_split_goal
-            all_goals (try simp_all [lir_denote_norm])
-            all_goals (leaner_denote_bounds; omega)))
+         leaner_denote_decide)
+      | leaner_denote_pipeline
       | trivial))
+
+/-- Decoding a literal integer at a literal width is decided outright: the
+certificate is a kernel decision, so no conditional is left for a split. -/
+simproc ↓ [lir_denote_norm] decodeIntegerLiteral
+    (LeanerIR.Proofs.Codec.decode? (LeanerIR.Proofs.Codec.specInt _ _) (LeanerIR.RuntimeValue.integer _)) :=
+  fun e => do
+    unless e.isAppOfArity ``LeanerIR.Proofs.Codec.decode? 4 do return .continue
+    let codec := e.getArg! 2
+    let raw := e.getArg! 3
+    unless codec.isAppOfArity ``LeanerIR.Proofs.Codec.specInt 2 do return .continue
+    unless raw.isAppOfArity ``LeanerIR.RuntimeValue.integer 1 do return .continue
+    let width := codec.getArg! 0
+    let signed := codec.getArg! 1
+    let value := raw.getArg! 0
+    unless width.isAppOfArity ``LeanerIR.IntWidth.bits 1 && (width.getArg! 0).nat?.isSome do
+      return .continue
+    unless signed.isConstOf ``Bool.true || signed.isConstOf ``Bool.false do return .continue
+    let some _ := value.int? | return .continue
+    let fits ← mkAppM ``LeanerIR.IntegerValueFits #[width, signed, value]
+    -- The equation is closed and decidable: its certificate is a decision.
+    let fitsProof? ← try some <$> mkDecideProof fits catch _ => pure none
+    let result ← match fitsProof? with
+      | some proof =>
+          mkAppM ``Option.some #[mkAppN (mkConst ``LeanerIR.SpecInt.mk) #[width, signed, value, proof]]
+      | none => mkAppOptM ``Option.none #[← mkAppM ``LeanerIR.SpecInt #[width, signed]]
+    let equation ← mkEq e result
+    let proof? ← try some <$> mkDecideProof equation catch _ => pure none
+    let some proof := proof? | return .continue
+    return .done { expr := result, proof? := some proof }
 
 /- The normalization of a verification condition: the denotation's rules,
 the weakest-precondition rules, and the propositional normal forms a leaf
@@ -760,6 +1072,20 @@ attribute [lir_denote_norm] LeanerIR.Proofs.wp_bind LeanerIR.Proofs.wp_pure
   LeanerIR.SemanticOperations.globalLoanKeyIn?_head LeanerIR.SemanticOperations.instantiatedTypeId_empty
   LeanerIR.Proofs.Denote.globalLoanKeyIn?_cons Nat.add_assoc LeanerIR.Proofs.Denote.nat_self_eq_add_iff
   LeanerIR.Proofs.Denote.nat_add_eq_self_iff
+  LeanerIR.Proofs.Denote.NTy.codec_vector LeanerIR.Proofs.Denote.decodeElements?_nil
+  LeanerIR.Proofs.Denote.decodeElements?_cons LeanerIR.Proofs.Denote.boundedVector_decode?_vector
+  LeanerIR.Proofs.Codec.boundedVector_encode LeanerIR.SpecVector.ofArray?_eq
+  LeanerIR.SpecVector.values_set LeanerIR.SpecVector.values_mk
+  Array.size_set! Array.size_push Array.size_map LeanerIR.Proofs.Denote.toArray_inj_iff
+  LeanerIR.RuntimeValue.vector.injEq List.map_toArray List.map_cons List.map_nil List.push_toArray
+  List.size_toArray List.length_cons List.length_nil List.getElem?_eq_some_iff
+  Array.set!_eq_setIfInBounds List.setIfInBounds_toArray List.set_cons_zero List.set_cons_succ
+  List.insertIdxIfInBounds_toArray List.insertIdx_zero List.insertIdx_succ_cons
+  List.eraseIdxIfInBounds_toArray List.eraseIdx_cons_zero List.eraseIdx_cons_succ
+  List.toList_toArray Option.bind_eq_some_iff Option.map_eq_some_iff Int.toNat_natCast
+  LeanerIR.Proofs.Denote.vectorLength_val LeanerIR.Proofs.Denote.NTy.encode_vector
+  LeanerIR.Proofs.Denote.NTy.eqb_vector_decide LeanerIR.Proofs.Denote.NTy.refFree
+  LeanerIR.Proofs.Denote.NRow.refFree LeanerIR.Proofs.Denote.NRows.refFree
   Option.isSome_some Option.isSome_none Option.isSome_map LeanerIR.GlobalKey.mk.injEq
   LeanerIR.StorageKey.address.injEq Option.map_eq_some_iff Option.map_eq_none_iff
   LeanerIR.StructHandle.mk.injEq LeanerIR.NamespaceId.mk.injEq
@@ -868,15 +1194,20 @@ partial def closeGoals (invariants : Array (Nat × Lean.Expr))
     if let some (site, arguments) ← loopGoal? goal then
       let some (_, invariant) := invariants.find? (·.1 == site)
         | throwError m!"no invariant for the loop at site {site}"
-      let invariant ← goal.withContext (whnfR (mkApp invariant arguments[4]!))
+      let invariant ← goal.withContext (whnfR (mkApp2 invariant arguments[4]! arguments[7]!))
       let rule := mkAppN (mkConst ``LeanerIR.Proofs.Denote.wp_loopAt)
         (arguments.extract 0 5 ++ #[invariant] ++ arguments.extract 5 8)
       let subgoals ← goal.apply rule
       match subgoals with
       | [entryHolds, step] =>
           setGoals [step]
-          evalTactic (← `(tactic| intro recursive loopHypothesis env loopInvariant))
+          evalTactic (← `(tactic| intro recursive loopHypothesis env state loopInvariant))
           evalTactic (← `(tactic| leaner_denote_normalize at loopHypothesis loopInvariant ⊢))
+          -- The invariant's equations on the locals are substituted before
+          -- the iteration is traversed, so the traversal sees their values.
+          evalTactic (← `(tactic| all_goals leaner_denote_split_hypotheses))
+          evalTactic (← `(tactic| all_goals leaner_denote_subst_vars))
+          evalTactic (← `(tactic| all_goals (try leaner_denote_normalize at loopHypothesis ⊢)))
           pending := pending ++ (← getGoals).toArray.map fun g => (g, provenance)
           setGoals [entryHolds]
           evalTactic (← `(tactic| try leaner_denote_normalize))
@@ -889,6 +1220,36 @@ partial def closeGoals (invariants : Array (Nat × Lean.Expr))
         | throwError m!"no verified callee for {handle}"
       let proofSyntax ← goal.withContext (Lean.Elab.Term.exprToSyntax theoremProof)
       setGoals [goal]
+      let proofType ← goal.withContext (instantiateMVars (← inferType theoremProof))
+      if proofType.isAppOfArity ``Eq 3 then
+        -- An unspecified callee: its compiled body replaces the call, by
+        -- the agreement theorem, and the traversal continues into it.
+        let compiled := (proofType.getArg! 2).appArg!
+        let unfoldNames := match compiled with
+          | .const name _ =>
+              [name, name.getPrefix ++ `body, name.getPrefix ++ `exports, name.getPrefix ++ `params,
+                name.getPrefix ++ `locals, name.getPrefix ++ `shape, name.getPrefix ++ `row]
+          | _ => []
+        let lemmas : Array (TSyntax ``Lean.Parser.Tactic.simpLemma) ← unfoldNames.toArray.mapM
+          fun name => `(Lean.Parser.Tactic.simpLemma| $(mkIdent (rootNamespace ++ name)):ident)
+        let target ← goal.withContext (instantiateMVars (← goal.getType))
+        let action := target.getArg! 3
+        let quote (e : Lean.Expr) := goal.withContext (Lean.Elab.Term.exprToSyntax e)
+        let unitSyntax ← quote (action.getArg! 0)
+        let handleSyntax ← quote (action.getArg! 1)
+        let valuesSyntax ← quote (action.getArg! 4)
+        let compiledSyntax ← quote compiled
+        let ensuresSyntax ← quote (target.getArg! 4)
+        let abortsSyntax ← quote (target.getArg! 5)
+        let initialSyntax ← quote (target.getArg! 6)
+        evalTactic (← `(tactic| refine
+          (LeanerIR.Proofs.Denote.wp_calleeMeaning_of_compiled $unitSyntax $handleSyntax
+            $compiledSyntax $proofSyntax $valuesSyntax $ensuresSyntax $abortsSyntax
+            $initialSyntax).mpr ?_))
+        evalTactic (← `(tactic| try simp only [$lemmas,*, LeanerIR.Proofs.Denote.Function.denote]))
+        evalTactic (← `(tactic| try leaner_denote_normalize))
+        pending := pending ++ (← getGoals).toArray.map fun g => (g, provenance)
+        continue
       evalTactic (← `(tactic| refine LeanerIR.Proofs.Denote.wp_call $proofSyntax ?_ ?_ ?_))
       let subgoals ← getGoals
       let constants ← goal.withContext (contractConstants (← inferType theoremProof))
@@ -920,39 +1281,44 @@ partial def closeGoals (invariants : Array (Nat × Lean.Expr))
       continue
     setGoals [goal]
     let closed ← try
-        evalTactic (← `(tactic| leaner_denote_leaf))
+        -- Without recovery: a failing alternative raises at once, so the
+        -- next alternative runs instead of an aborted goal list.
+        Lean.Elab.Tactic.withoutRecover (evalTactic (← `(tactic| leaner_denote_leaf)))
         pure (← getGoals).isEmpty
       catch failure =>
         if leaner.denoteDebug.get (← getOptions) then
           logInfo m!"leaf not decided: {failure.toMessageData}"
           let steps : Array (String × Syntax.Tactic) := #[
             ("clear", ← `(tactic| leaner_denote_clear_computations)),
-            ("subst", ← `(tactic| try subst_vars)),
+            ("split hypotheses 0", ← `(tactic| leaner_denote_split_hypotheses)),
+            ("subst", ← `(tactic| leaner_denote_subst_vars)),
             ("bounds", ← `(tactic| leaner_denote_bounds)),
             ("simp", ← `(tactic| try simp (disch := omega) only [LeanerIR.Proofs.Obligation_iff,
               Nat.reduceAdd, Int.reducePow, Int.reduceSub, Nat.reducePow, Nat.reduceSub,
               Int.tmod_eq_emod_of_nonneg, Int.tdiv_eq_ediv_of_nonneg, lir_denote_norm] at *)),
-            ("simp_all 1", ← `(tactic| try simp_all [lir_denote_norm])),
+            ("simp_all 1", ← `(tactic| try leaner_simp_all [lir_denote_norm])),
             ("split hypotheses 1", ← `(tactic| leaner_denote_split_hypotheses)),
-            ("subst 1", ← `(tactic| try subst_vars)),
-            ("simp_all 2", ← `(tactic| try simp_all [lir_denote_norm])),
+            ("subst 1", ← `(tactic| leaner_denote_subst_vars)),
+            ("simp_all 2", ← `(tactic| try leaner_simp_all [lir_denote_norm])),
             ("split hypotheses 2", ← `(tactic| leaner_denote_split_hypotheses)),
-            ("subst 2", ← `(tactic| try subst_vars)),
-            ("simp_all 3", ← `(tactic| try simp_all [lir_denote_norm])),
+            ("subst 2", ← `(tactic| leaner_denote_subst_vars)),
+            ("simp_all 3", ← `(tactic| try leaner_simp_all [lir_denote_norm])),
             ("split hypotheses 3", ← `(tactic| leaner_denote_split_hypotheses)),
-            ("subst 3", ← `(tactic| try subst_vars)),
-            ("simp_all 4", ← `(tactic| try simp_all [lir_denote_norm])),
-            ("split conditionals", ← `(tactic| all_goals (try (split <;> (try simp_all [lir_denote_norm]))))),
+            ("subst 3", ← `(tactic| leaner_denote_subst_vars)),
+            ("simp_all 4", ← `(tactic| try leaner_simp_all [lir_denote_norm])),
+            ("split conditionals", ← `(tactic| all_goals (try (split <;> (try leaner_simp_all [lir_denote_norm]))))),
             ("split goal", ← `(tactic| all_goals leaner_denote_split_goal)),
-            ("simp_all 5", ← `(tactic| all_goals (try simp_all [lir_denote_norm]))),
+            ("round after split", ← `(tactic| leaner_denote_saturate_round)),
             ("bounds 2", ← `(tactic| all_goals leaner_denote_bounds)),
-            ("omega", ← `(tactic| all_goals omega))]
+            ("state", ← `(tactic| all_goals (try leaner_denote_state))),
+            ("omega", ← `(tactic| all_goals omega)),
+            ("pipeline", ← `(tactic| leaner_denote_pipeline))]
           let saved ← saveState
           setGoals [goal]
           let mut report : Array MessageData := #[]
           for (label, step) in steps do
             try
-              evalTactic step
+              Lean.Elab.Tactic.withoutRecover (evalTactic step)
               let goals ← getGoals
               let shown ← goals.mapM fun g => do
                 pure (MessageData.ofFormat (← Lean.Meta.ppGoal g))

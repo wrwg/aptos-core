@@ -137,14 +137,38 @@ def Choices.select? {names : List String} {rows : NRows} {τ : NTy} :
       | some fields => some (x.select fields)
       | none => rest.select? value := rfl
 
+/-- The index of an element place, in the forms validation admits: a
+literal, the integer a local slot holds, or an offset from the end. -/
+inductive PlaceIndex where
+  | literal (index : Nat)
+  | slot (index : Nat)
+  | fromEnd (offset : Nat)
+  deriving Repr, DecidableEq
+
+/-- The integer a slot of the locals holds, at any width. -/
+def HEnv.slotInt? : (Γ : NRow) → HEnv Γ → Nat → Option Int
+  | .nil, _, _ => none
+  | .cons (.int _ _) _, env, 0 => env.1.map (·.val)
+  | .cons _ _, _, 0 => none
+  | .cons _ rest, env, index + 1 => HEnv.slotInt? rest env.2 index
+
+/-- The element position an index names in a vector of a size; none when
+the local is not an integer or the position is negative. -/
+def PlaceIndex.resolve? {Γ : NRow} (env : HEnv Γ) (size : Nat) : PlaceIndex → Option Nat
+  | .literal index => some index
+  | .slot position => (HEnv.slotInt? Γ env position).bind fun value =>
+      if value < 0 then none else some value.toNat
+  | .fromEnd offset => if offset ≤ size then some (size - offset) else none
+
 /-- A typed projection path into a value: through a mutable reference's
-current value and into a struct's field.  It is what a place names once
-its base local is known. -/
+current value, into a struct's field, and to a vector's element.  It is
+what a place names once its base local is known. -/
 inductive Proj : NTy → NTy → Type where
   | nil {τ : NTy} : Proj τ τ
   | deref {τ σ : NTy} (rest : Proj τ σ) : Proj (.ref τ) σ
   | field {source : StructHandle} {fields : NRow} {σ τ : NTy} (x : Var fields σ)
       (rest : Proj σ τ) : Proj (.struct source fields) τ
+  | index {τ σ : NTy} (position : PlaceIndex) (rest : Proj τ σ) : Proj (.vector τ) σ
 
 /-- Replace the component of a row at a position. -/
 def Var.update : {Γ : NRow} → {τ : NTy} → Var Γ τ → τ.carrier → HList Γ → HList Γ
@@ -158,36 +182,88 @@ def Var.update : {Γ : NRow} → {τ : NTy} → Var Γ τ → τ.carrier → HLi
     (values : HList (.cons σ Γ)) :
     (Var.there rest).update value values = (values.1, rest.update value values.2) := rfl
 
-/-- The component a path reaches. -/
-def Proj.get : {τ σ : NTy} → Proj τ σ → τ.carrier → σ.carrier
-  | _, _, .nil, value => value
-  | _, _, .deref rest, value => rest.get value.2
-  | _, _, .field x rest, value => rest.get (x.select value)
+/-- The component of a value a path reaches; none when an element
+position is outside its vector, which the runtime leaves unresolved. -/
+def Proj.get? {Γ : NRow} (env : HEnv Γ) : {τ σ : NTy} → Proj τ σ → τ.carrier → Option σ.carrier
+  | _, _, .nil, value => some value
+  | _, _, .deref rest, value => rest.get? env value.2
+  | _, _, .field x rest, value => rest.get? env (x.select value)
+  | _, _, .index position rest, value =>
+      (position.resolve? env value.values.size).bind fun index =>
+        value.values[index]?.bind fun element => rest.get? env element
 
 /-- The value with the component a path reaches replaced. -/
-def Proj.set : {τ σ : NTy} → Proj τ σ → σ.carrier → τ.carrier → τ.carrier
-  | _, _, .nil, replacement, _ => replacement
-  | _, _, .deref rest, replacement, value => (value.1, rest.set replacement value.2)
+def Proj.set? {Γ : NRow} (env : HEnv Γ) : {τ σ : NTy} → Proj τ σ → σ.carrier → τ.carrier →
+    Option τ.carrier
+  | _, _, .nil, replacement, _ => some replacement
+  | _, _, .deref rest, replacement, value =>
+      (rest.set? env replacement value.2).map fun current => (value.1, current)
   | _, _, .field x rest, replacement, value =>
-      x.update (rest.set replacement (x.select value)) value
+      (rest.set? env replacement (x.select value)).map fun component => x.update component value
+  | _, _, .index position rest, replacement, value =>
+      (position.resolve? env value.values.size).bind fun index =>
+        value.values[index]?.bind fun element =>
+          (rest.set? env replacement element).map fun updated => value.set index updated
 
-@[simp] theorem Proj.get_nil {τ : NTy} (value : τ.carrier) : (Proj.nil : Proj τ τ).get value = value :=
-  rfl
-@[simp] theorem Proj.get_deref {τ σ : NTy} (rest : Proj τ σ) (value : (NTy.ref τ).carrier) :
-    (Proj.deref rest).get value = rest.get value.2 := rfl
-@[simp] theorem Proj.get_field {source : StructHandle} {fields : NRow} {σ τ : NTy}
-    (x : Var fields σ) (rest : Proj σ τ) (value : (NTy.struct source fields).carrier) :
-    (Proj.field x rest).get value = rest.get (x.select value) := rfl
-@[simp] theorem Proj.set_nil {τ : NTy} (replacement value : τ.carrier) :
-    (Proj.nil : Proj τ τ).set replacement value = replacement := rfl
-@[simp] theorem Proj.set_deref {τ σ : NTy} (rest : Proj τ σ) (replacement : σ.carrier)
-    (value : (NTy.ref τ).carrier) :
-    (Proj.deref rest).set replacement value = (value.1, rest.set replacement value.2) := rfl
-@[simp] theorem Proj.set_field {source : StructHandle} {fields : NRow} {σ τ : NTy}
-    (x : Var fields σ) (rest : Proj σ τ) (replacement : τ.carrier)
+@[simp] theorem Proj.get?_nil {Γ : NRow} (env : HEnv Γ) {τ : NTy} (value : τ.carrier) :
+    (Proj.nil : Proj τ τ).get? env value = some value := rfl
+@[simp] theorem Proj.get?_deref {Γ : NRow} (env : HEnv Γ) {τ σ : NTy} (rest : Proj τ σ)
+    (value : (NTy.ref τ).carrier) : (Proj.deref rest).get? env value = rest.get? env value.2 := rfl
+@[simp] theorem Proj.get?_field {Γ : NRow} (env : HEnv Γ) {source : StructHandle} {fields : NRow}
+    {σ τ : NTy} (x : Var fields σ) (rest : Proj σ τ) (value : (NTy.struct source fields).carrier) :
+    (Proj.field x rest).get? env value = rest.get? env (x.select value) := rfl
+@[simp] theorem Proj.get?_index {Γ : NRow} (env : HEnv Γ) {τ σ : NTy} (position : PlaceIndex)
+    (rest : Proj τ σ) (value : (NTy.vector τ).carrier) :
+    (Proj.index position rest).get? env value =
+      (position.resolve? env value.values.size).bind fun index =>
+        value.values[index]?.bind fun element => rest.get? env element := rfl
+@[simp] theorem Proj.set?_nil {Γ : NRow} (env : HEnv Γ) {τ : NTy} (replacement value : τ.carrier) :
+    (Proj.nil : Proj τ τ).set? env replacement value = some replacement := rfl
+@[simp] theorem Proj.set?_deref {Γ : NRow} (env : HEnv Γ) {τ σ : NTy} (rest : Proj τ σ)
+    (replacement : σ.carrier) (value : (NTy.ref τ).carrier) :
+    (Proj.deref rest).set? env replacement value =
+      (rest.set? env replacement value.2).map fun current => (value.1, current) := rfl
+@[simp] theorem Proj.set?_field {Γ : NRow} (env : HEnv Γ) {source : StructHandle} {fields : NRow}
+    {σ τ : NTy} (x : Var fields σ) (rest : Proj σ τ) (replacement : τ.carrier)
     (value : (NTy.struct source fields).carrier) :
-    (Proj.field x rest).set replacement value =
-      x.update (rest.set replacement (x.select value)) value := rfl
+    (Proj.field x rest).set? env replacement value =
+      (rest.set? env replacement (x.select value)).map fun component => x.update component value := rfl
+@[simp] theorem Proj.set?_index {Γ : NRow} (env : HEnv Γ) {τ σ : NTy} (position : PlaceIndex)
+    (rest : Proj τ σ) (replacement : σ.carrier) (value : (NTy.vector τ).carrier) :
+    (Proj.index position rest).set? env replacement value =
+      (position.resolve? env value.values.size).bind fun index =>
+        value.values[index]?.bind fun element =>
+          (rest.set? env replacement element).map fun updated => value.set index updated := rfl
+@[simp] theorem PlaceIndex.resolve?_literal {Γ : NRow} (env : HEnv Γ) (size index : Nat) :
+    (PlaceIndex.literal index).resolve? env size = some index := rfl
+@[simp] theorem PlaceIndex.resolve?_slot {Γ : NRow} (env : HEnv Γ) (size slot : Nat) :
+    (PlaceIndex.slot slot).resolve? env size =
+      (HEnv.slotInt? Γ env slot).bind fun value => if value < 0 then none else some value.toNat := rfl
+@[simp] theorem PlaceIndex.resolve?_fromEnd {Γ : NRow} (env : HEnv Γ) (size offset : Nat) :
+    (PlaceIndex.fromEnd offset).resolve? env size =
+      if offset ≤ size then some (size - offset) else none := rfl
+@[simp] theorem HEnv.slotInt?_int_zero {width : Nat} {signed : Bool} {rest : NRow}
+    (env : HEnv (.cons (.int width signed) rest)) :
+    HEnv.slotInt? (.cons (.int width signed) rest) env 0 = env.1.map (·.val) := rfl
+@[simp] theorem HEnv.slotInt?_succ {τ : NTy} {rest : NRow} (env : HEnv (.cons τ rest))
+    (index : Nat) : HEnv.slotInt? (.cons τ rest) env (index + 1) =
+      HEnv.slotInt? rest env.2 index := by cases τ <;> rfl
+
+/-- A row of one type repeated: the elements of a vector literal. -/
+abbrev NRow.replicate : Nat → NTy → NRow
+  | 0, _ => .nil
+  | count + 1, τ => .cons τ (NRow.replicate count τ)
+
+/-- The elements of a uniform row, in order. -/
+def HList.toListOf {τ : NTy} : (count : Nat) → HList (NRow.replicate count τ) → List τ.carrier
+  | 0, _ => []
+  | count + 1, values => values.1 :: HList.toListOf count values.2
+
+@[simp] theorem HList.toListOf_zero {τ : NTy} (values : HList (NRow.replicate 0 τ)) :
+    HList.toListOf 0 values = [] := rfl
+@[simp] theorem HList.toListOf_succ {τ : NTy} (count : Nat)
+    (values : HList (NRow.replicate (count + 1) τ)) :
+    HList.toListOf (count + 1) values = values.1 :: HList.toListOf count values.2 := rfl
 
 /-- The targets of a destructuring bind: one optional slot per component. -/
 inductive Vars (Γ : NRow) : NRow → Type where
@@ -316,6 +392,28 @@ inductive Term (ρ : ResultShape) : NRow → NTy → Type where
   the lender's component. -/
   | writeBack {Γ : NRow} {τ σ : NTy} (x : Var Γ τ) (path : Proj τ σ) (loan : Var Γ (.ref σ)) :
       Term ρ Γ .unit
+  /-- A vector of listed elements. -/
+  | vectorLit {Γ : NRow} {τ : NTy} (count : Nat) (elements : Args ρ Γ (NRow.replicate count τ)) :
+      Term ρ Γ (.vector τ)
+  /-- The length of a vector, which its bound fits in `u64`. -/
+  | length {Γ : NRow} {τ : NTy} (vector : Term ρ Γ (.vector τ)) : Term ρ Γ (.int 64 false)
+  /-- An element by position; aborts outside the vector. -/
+  | index {Γ : NRow} {τ : NTy} {width : Nat} {signed : Bool} (vector : Term ρ Γ (.vector τ))
+      (position : Term ρ Γ (.int width signed)) : Term ρ Γ τ
+  /-- The bounds check of an element place. -/
+  | checkIndex {Γ : NRow} {τ : NTy} {width : Nat} {signed : Bool} (failure : ThrowKind)
+      (vector : Term ρ Γ (.vector τ)) (position : Term ρ Γ (.int width signed)) : Term ρ Γ .unit
+  /-- A vector with one more element at its back, as a value. -/
+  | push {Γ : NRow} {τ : NTy} (vector : Term ρ Γ (.vector τ)) (element : Term ρ Γ τ) :
+      Term ρ Γ (.vector τ)
+  /-- A vector with an element inserted at a position; aborts past its end. -/
+  | insert {Γ : NRow} {τ : NTy} {width : Nat} {signed : Bool} (vector : Term ρ Γ (.vector τ))
+      (position : Term ρ Γ (.int width signed)) (element : Term ρ Γ τ) : Term ρ Γ (.vector τ)
+  /-- The element at a position with the vector without it; aborts outside
+  the vector. -/
+  | remove {Γ : NRow} {τ : NTy} {width : Nat} {signed : Bool} (vector : Term ρ Γ (.vector τ))
+      (position : Term ρ Γ (.int width signed)) :
+      Term ρ Γ (.tuple (.cons τ (.cons (.vector τ) .nil)))
   /-- Evaluate a value, then an effect, and keep the value. -/
   | seqAfter {Γ : NRow} {τ : NTy} (value : Term ρ Γ τ) (effect : Term ρ Γ .unit) : Term ρ Γ τ
   /-- The resource of a family at a key; aborts when none is published. -/
@@ -356,7 +454,9 @@ def Args.settle {ρ : ResultShape} {Γ : NRow} : {σs : NRow} → Args ρ Γ σs
         match x.get env, exportedRaw? values.1.1 exports with
         | some current, some raw =>
             Spec.bind (decodeOr σ.codec raw) fun replacement =>
-              Spec.pure (x.set (path.set replacement current) env)
+              match path.set? env replacement current with
+              | some updated => Spec.pure (x.set updated env)
+              | none => Spec.bottom
         | _, _ => Spec.bottom
 
 @[simp] theorem Args.settle_nil {ρ : ResultShape} {Γ : NRow} (values : HList .nil)
@@ -374,7 +474,9 @@ def Args.settle {ρ : ResultShape} {Γ : NRow} : {σs : NRow} → Args ρ Γ σs
         match x.get env, exportedRaw? values.1.1 exports with
         | some current, some raw =>
             Spec.bind (decodeOr σ.codec raw) fun replacement =>
-              Spec.pure (x.set (path.set replacement current) env)
+              match path.set? env replacement current with
+              | some updated => Spec.pure (x.set updated env)
+              | none => Spec.bottom
         | _, _ => Spec.bottom := rfl
 
 /-- The mutable-reference parameters of a function, as the slots whose
@@ -559,22 +661,79 @@ def Term.denote (unit : LeanerIR.Validation.ExecutableUnit) {ρ : ResultShape} :
         | none => Spec.bottom
   | _, _, .readPlace x path, env =>
       match x.get env with
-      | some value => Spec.pure (.value (path.get value) env)
+      | some value =>
+          match path.get? env value with
+          | some component => Spec.pure (.value component env)
+          | none => Spec.bottom
       | none => Spec.bottom
   | _, _, .writePlace x path value, env =>
       Flow.bind (value.denote unit env) fun v env =>
         match x.get env with
-        | some current => Spec.pure (.value () (x.set (path.set v current) env))
+        | some current =>
+            match path.set? env v current with
+            | some updated => Spec.pure (.value () (x.set updated env))
+            | none => Spec.bottom
         | none => Spec.bottom
   | _, _, .borrowPlace x path, env =>
       match x.get env with
       | some value =>
-          Spec.bind mintLoan fun loan => Spec.pure (.value (loan, path.get value) env)
+          match path.get? env value with
+          | some component => Spec.bind mintLoan fun loan => Spec.pure (.value (loan, component) env)
+          | none => Spec.bottom
       | none => Spec.bottom
   | _, _, .writeBack x path loan, env =>
       match x.get env, loan.get env with
-      | some current, some borrow => Spec.pure (.value () (x.set (path.set borrow.2 current) env))
+      | some current, some borrow =>
+          match path.set? env borrow.2 current with
+          | some updated => Spec.pure (.value () (x.set updated env))
+          | none => Spec.bottom
       | _, _ => Spec.bottom
+  | _, _, .vectorLit count elements, env =>
+      Flow.bind (elements.denote unit env) fun values env =>
+        match SpecVector.ofArray? (HList.toListOf count values).toArray with
+        | some vector => Spec.pure (.value vector env)
+        | none => Spec.bottom
+  | _, _, .length vector, env =>
+      Flow.bind (vector.denote unit env) fun values env =>
+        Spec.pure (.value (vectorLength values) env)
+  | _, _, .index vector position, env =>
+      Flow.bind (vector.denote unit env) fun values env =>
+        Flow.bind (position.denote unit env) fun i env =>
+          if i.val < 0 then Spec.abort (.abort, #[.integer i.val])
+          else match values.values[i.val.toNat]? with
+            | some element => Spec.pure (.value element env)
+            | none => Spec.abort (.abort, #[.integer i.val])
+  | _, _, .checkIndex failure vector position, env =>
+      Flow.bind (vector.denote unit env) fun values env =>
+        Flow.bind (position.denote unit env) fun i env =>
+          if 0 ≤ i.val ∧ i.val < values.values.size then Spec.pure (.value () env)
+          else Spec.abort (failure, #[.integer 1])
+  | _, _, .push vector element, env =>
+      Flow.bind (vector.denote unit env) fun values env =>
+        Flow.bind (element.denote unit env) fun e env =>
+          match SpecVector.ofArray? (values.values.push e) with
+          | some vector => Spec.pure (.value vector env)
+          | none => Spec.bottom
+  | _, _, .insert vector position element, env =>
+      Flow.bind (vector.denote unit env) fun values env =>
+        Flow.bind (position.denote unit env) fun i env =>
+          Flow.bind (element.denote unit env) fun e env =>
+            if i.val < 0 ∨ values.values.size < i.val.toNat then Spec.abort (.abort, #[.integer i.val])
+            else match SpecVector.ofArray? (values.values.insertIdxIfInBounds i.val.toNat e) with
+              | some vector => Spec.pure (.value vector env)
+              | none => Spec.bottom
+  | _, _, .remove vector position, env =>
+      Flow.bind (vector.denote unit env) fun values env =>
+        Flow.bind (position.denote unit env) fun i env =>
+          if i.val < 0 then Spec.abort (.abort, #[.integer i.val])
+          else match values.values[i.val.toNat]? with
+            | some element =>
+                match SpecVector.ofArray? (values.values.eraseIdxIfInBounds i.val.toNat) with
+                | some remaining =>
+                    Spec.pure (.value ((element, (remaining, ())) :
+                      HList (.cons _ (.cons (.vector _) .nil))) env)
+                | none => Spec.bottom
+            | none => Spec.abort (.abort, #[.integer i.val])
   | _, _, .seqAfter value effect, env =>
       Flow.bind (value.denote unit env) fun v env =>
         Flow.bind (effect.denote unit env) fun _ env => Spec.pure (.value v env)
@@ -646,9 +805,12 @@ def Args.denote (unit : LeanerIR.Validation.ExecutableUnit) {ρ : ResultShape} :
   | _, _, .reborrow x path tail, env =>
       match x.get env with
       | some value =>
-          Spec.bind mintLoan fun loan =>
-            Flow.bind (tail.denote unit env) fun values env =>
-              Spec.pure (.value ((loan, path.get value), values) env)
+          match path.get? env value with
+          | some component =>
+              Spec.bind mintLoan fun loan =>
+                Flow.bind (tail.denote unit env) fun values env =>
+                  Spec.pure (.value ((loan, component), values) env)
+          | none => Spec.bottom
       | none => Spec.bottom
 end
 
@@ -751,22 +913,20 @@ theorem wp_flowBind {ρ : ResultShape} {Γ : NRow} {α β : Type}
     have := h.1 flow final execution
     cases flow <;> simpa [wp_pure] using this
 
-/-- Loop verification from an invariant over the locals: it holds at
-entry, and one iteration under it is correct whenever the next iteration
-is assumed correct under it.  Partial correctness; the loop leaves the
-store as it found it. -/
+/-- Loop verification from an invariant over the locals and the state: it
+holds at entry, and one iteration under it is correct whenever the next
+iteration is assumed correct under it.  Partial correctness. -/
 theorem wp_loopAt {ρ : ResultShape} {Γ : NRow} (site : Nat)
     (iteration : (HEnv Γ → Comp (Flow ρ Γ Unit)) → HEnv Γ → Comp (Flow ρ Γ Unit))
-    (entry : HEnv Γ) (invariant : HEnv Γ → Prop)
+    (entry : HEnv Γ) (invariant : HEnv Γ → RuntimeState → Prop)
     (ensures : Flow ρ Γ Unit → RuntimeState → Prop) (aborts : Failure → Prop)
     (initial : RuntimeState)
-    (entryHolds : invariant entry)
+    (entryHolds : invariant entry initial)
     (step : ∀ recursive : HEnv Γ → Comp (Flow ρ Γ Unit),
-      (∀ env, invariant env → wp (recursive env) ensures aborts initial) →
-      ∀ env, invariant env → wp (iteration recursive env) ensures aborts initial) :
+      (∀ env state, invariant env state → wp (recursive env) ensures aborts state) →
+      ∀ env state, invariant env state → wp (iteration recursive env) ensures aborts state) :
     wp (loopAt site iteration entry) ensures aborts initial :=
-  wp_withInvariant_fix_frame (invariant := fun env _ => invariant env) entryHolds
-    fun recursive hypothesis env holds => step recursive hypothesis env holds
+  wp_withInvariant_fix (invariant := invariant) entryHolds step
 
 @[simp] theorem finish_value {Γ : NRow} (exports : Exports Γ) (shape : ResultShape)
     (value : shape.bodyType.carrier) (env : HEnv Γ) :
@@ -785,8 +945,11 @@ attribute [lir_denote] Term.denote Args.denote Function.denote ResultShape.ofBod
   ResultShape.finish Flow.iterate Flow.rebase Flow.bind_pure_value Flow.bind_pure_return
   Flow.bind_pure_break Flow.bind_pure_continue Flow.bind_abort wp_flowBind finish_value finish_return finish_break
   finish_continue exportThen_nil exportThen paramExports_nil paramExports_cons pushExports_nil
-  pushExports_cons Option.bind_some Option.bind_none Proj.get_nil Proj.get_deref Proj.get_field
-  Proj.set_nil Proj.set_deref Proj.set_field Var.update_here Var.update_there Args.settle_nil
+  pushExports_cons Option.bind_some Option.bind_none
+  Proj.get?_nil Proj.get?_deref Proj.get?_field Proj.get?_index
+  Proj.set?_nil Proj.set?_deref Proj.set?_field Proj.set?_index PlaceIndex.resolve?_literal
+  PlaceIndex.resolve?_slot PlaceIndex.resolve?_fromEnd HEnv.slotInt?_int_zero HEnv.slotInt?_succ
+  HList.toListOf_zero HList.toListOf_succ Var.update_here Var.update_there Args.settle_nil
   Args.settle_cons Args.settle_reborrow exportsAfter_self exportsAfter_push exportsAfter_push_push
   NTy.decode?_encode NTy.encode_ref Which.inject_here Which.inject_there Which.project?_here_inl
   Which.project?_here_inr Which.project?_there_inl Which.project?_there_inr variantName_inl
@@ -810,6 +973,7 @@ def describeValue : {τ : NTy} → τ.carrier → String
   | .tuple _, _ => "(..)"
   | .struct _ _, _ => "{..}"
   | .enum _ _ _ _, _ => "variant{..}"
+  | .vector _, value => s!"[{value.values.size} elements]"
   | .ref _, value => s!"&mut#{value.1}"
 
 /-- A readable rendering of destructuring targets. -/
@@ -866,6 +1030,14 @@ partial def Term.describe {ρ : ResultShape} : {Γ : NRow} → {τ : NTy} → Te
   | _, _, .writePlace x _ value => s!"(local{x.index}.path := {value.describe})"
   | _, _, .borrowPlace x _ => s!"&mut local{x.index}.path"
   | _, _, .writeBack x _ loan => s!"(local{x.index}.path <- local{loan.index})"
+  | _, _, .vectorLit _ elements => s!"vector[{elements.describe}]"
+  | _, _, .length vector => s!"{vector.describe}.length"
+  | _, _, .index vector position => s!"{vector.describe}[{position.describe}]"
+  | _, _, .checkIndex _ vector position => s!"check({vector.describe}[{position.describe}])"
+  | _, _, .push vector element => s!"push({vector.describe}, {element.describe})"
+  | _, _, .insert vector position element =>
+      s!"insert({vector.describe}, {position.describe}, {element.describe})"
+  | _, _, .remove vector position => s!"remove({vector.describe}, {position.describe})"
   | _, _, .seqAfter value effect => s!"({value.describe} then {effect.describe})"
   | _, _, .globalRead family key => s!"global[{repr family}]({key.describe})"
   | _, _, .globalContains family key => s!"exists[{repr family}]({key.describe})"

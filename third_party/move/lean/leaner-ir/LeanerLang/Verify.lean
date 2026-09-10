@@ -42,6 +42,7 @@ deriving instance ToExpr for FunctionHandle
 deriving instance ToExpr for LeanerIR.StructHandle
 deriving instance ToExpr for Family
 
+attribute [lir_denote_norm] LeanerLang.Contract.lengthVector_vector
 attribute [lir_denote_norm] LeanerLang.Contract.testVariants_nominal_self
   LeanerLang.Contract.testVariants LeanerLang.Contract.variantMember
   LeanerLang.Contract.selectVariantField LeanerLang.Contract.variantIndex
@@ -67,6 +68,7 @@ partial def quoteNTy : NTy → MetaM Lean.Expr
       let namesExpr := toExpr names
       let distinct ← mkDecideProof (← mkAppM ``List.Nodup #[namesExpr])
       return mkAppN (mkConst ``NTy.enum) #[toExpr source, namesExpr, ← quoteRows rows, distinct]
+  | .vector element => return mkApp (mkConst ``NTy.vector) (← quoteNTy element)
   | .ref referent => return mkApp (mkConst ``NTy.ref) (← quoteNTy referent)
 
 partial def quoteRow : NRow → MetaM Lean.Expr
@@ -88,6 +90,12 @@ partial def quoteCarrier : (τ : NTy) → τ.carrier → MetaM Lean.Expr
   | .tuple elements, value => quoteRowValue elements value
   | .struct _ fields, value => quoteRowValue fields value
   | .enum _ names rows _, value => quoteVariantValue names rows value
+  | .vector element, value => do
+      let carrier := mkApp (mkConst ``NTy.carrier) (← quoteNTy element)
+      let values ← mkArrayLit carrier (← value.values.toList.mapM (quoteCarrier element))
+      let bounded ← mkDecideProof (← mkAppM ``LT.lt
+        #[← mkAppM ``Array.size #[values], mkNatLit (2 ^ 64)])
+      mkAppM ``LeanerIR.SpecVector.mk #[values, bounded]
   | .ref referent, value => do
       mkAppM ``Prod.mk #[toExpr value.1, ← quoteCarrier referent value.2]
   | .int width signed, value => do
@@ -128,8 +136,16 @@ def quoteVar : {Γ : NRow} → {τ : NTy} → Var Γ τ → MetaM Lean.Expr
       return mkAppN (mkConst ``Var.there)
         #[← quoteRow Γ, ← quoteNTy σ, ← quoteNTy τ, ← quoteVar rest]
 
+def quotePlaceIndex : PlaceIndex → Lean.Expr
+  | .literal index => mkApp (mkConst ``PlaceIndex.literal) (toExpr index)
+  | .slot slot => mkApp (mkConst ``PlaceIndex.slot) (toExpr slot)
+  | .fromEnd offset => mkApp (mkConst ``PlaceIndex.fromEnd) (toExpr offset)
+
 def quoteProj : {τ σ : NTy} → Proj τ σ → MetaM Lean.Expr
   | τ, _, .nil => return mkApp (mkConst ``Proj.nil) (← quoteNTy τ)
+  | .vector τ, σ, .index position rest =>
+      return mkAppN (mkConst ``Proj.index)
+        #[← quoteNTy τ, ← quoteNTy σ, quotePlaceIndex position, ← quoteProj rest]
   | .ref τ, σ, .deref rest =>
       return mkAppN (mkConst ``Proj.deref) #[← quoteNTy τ, ← quoteNTy σ, ← quoteProj rest]
   | .struct source fields, τ, @Proj.field _ _ σ _ x rest =>
@@ -273,6 +289,26 @@ partial def quoteTerm {ρ : ResultShape} {Γ : NRow} : {τ : NTy} → Term ρ Γ
   | .unit, @Term.writeBack _ _ τ σ x path loan =>
       return mkAppN (mkConst ``Term.writeBack) #[shape, context, ← toExpr τ, ← toExpr σ,
         ← quoteVar x, ← quoteProj path, ← quoteVar loan]
+  | .vector τ, .vectorLit count elements =>
+      return mkAppN (mkConst ``Term.vectorLit) #[shape, context, ← toExpr τ, Lean.toExpr count,
+        ← quoteArgs elements]
+  | .int 64 false, @Term.length _ _ τ vector =>
+      return mkAppN (mkConst ``Term.length) #[shape, context, ← toExpr τ, ← quoteTerm vector]
+  | τ, @Term.index _ _ _ width signed vector position =>
+      return mkAppN (mkConst ``Term.index) #[shape, context, ← toExpr τ, Lean.toExpr width,
+        Lean.toExpr signed, ← quoteTerm vector, ← quoteTerm position]
+  | .unit, @Term.checkIndex _ _ τ width signed failure vector position =>
+      return mkAppN (mkConst ``Term.checkIndex) #[shape, context, ← toExpr τ, Lean.toExpr width,
+        Lean.toExpr signed, Lean.toExpr failure, ← quoteTerm vector, ← quoteTerm position]
+  | .vector τ, .push vector element =>
+      return mkAppN (mkConst ``Term.push) #[shape, context, ← toExpr τ, ← quoteTerm vector,
+        ← quoteTerm element]
+  | .vector τ, @Term.insert _ _ _ width signed vector position element =>
+      return mkAppN (mkConst ``Term.insert) #[shape, context, ← toExpr τ, Lean.toExpr width,
+        Lean.toExpr signed, ← quoteTerm vector, ← quoteTerm position, ← quoteTerm element]
+  | .tuple (.cons τ (.cons (.vector _) .nil)), @Term.remove _ _ _ width signed vector position =>
+      return mkAppN (mkConst ``Term.remove) #[shape, context, ← toExpr τ, Lean.toExpr width,
+        Lean.toExpr signed, ← quoteTerm vector, ← quoteTerm position]
   | τ, .seqAfter value effect =>
       return mkAppN (mkConst ``Term.seqAfter) #[shape, context, ← toExpr τ, ← quoteTerm value,
         ← quoteTerm effect]
@@ -342,6 +378,14 @@ partial def _root_.LeanerIR.Proofs.Denote.Term.callees {ρ : ResultShape} : {Γ 
   | _, _, .deref value, found => value.callees found
   | _, _, .mutate _ value, found => value.callees found
   | _, _, .writePlace _ _ value, found => value.callees found
+  | _, _, .vectorLit _ elements, found => elements.callees found
+  | _, _, .length vector, found => vector.callees found
+  | _, _, .index vector position, found => position.callees (vector.callees found)
+  | _, _, .checkIndex _ vector position, found => position.callees (vector.callees found)
+  | _, _, .push vector element, found => element.callees (vector.callees found)
+  | _, _, .insert vector position element, found =>
+      element.callees (position.callees (vector.callees found))
+  | _, _, .remove vector position, found => position.callees (vector.callees found)
   | _, _, .seqAfter value effect, found => effect.callees (value.callees found)
   | _, _, .globalRead _ key, found => key.callees found
   | _, _, .globalContains _ key, found => key.callees found
@@ -619,7 +663,7 @@ private def logicalValue (τ : NTy) (value : Lean.Expr) : MetaM (Option Lean.Exp
   | .int _ _ => return some (← mkAppM ``LeanerIR.SpecInt.val #[value])
   | .bool | .address | .signer | .string => return some value
   | .unit | .bytes => return none
-  | .tuple _ | .struct _ _ | .enum _ _ _ _ =>
+  | .tuple _ | .struct _ _ | .enum _ _ _ _ | .vector _ =>
       return some (mkAppN (mkConst ``NTy.encode) #[← quoteNTy τ, value])
   | .ref referent => logicalValue referent (← mkAppM ``Prod.snd #[value])
 
@@ -635,7 +679,64 @@ private partial def referencedLocals (ns : ValidatedNamespace) (id : LeanerIR.Ex
       (LeanerIR.Validation.expressionChildren expression.kind).foldl
         (fun found child => referencedLocals ns child found) found
 
-/-- The invariant of each loop of a function, keyed by the loop's site. -/
+/-- The root local of a place, and whether the place goes through a
+dereference of it. -/
+private partial def placeRootLocal? (ns : ValidatedNamespace) (place : LeanerIR.PlaceId)
+    (fuel : Nat := ns.places.size) : Option (Nat × Bool) :=
+  match fuel, ns.places[place.index]? with
+  | 0, _ | _, none => none
+  | _ + 1, some (.localVar localId) => some (localId.index, false)
+  | fuel + 1, some (.deref base) =>
+      (placeRootLocal? ns base fuel).map fun (root, _) => (root, true)
+  | fuel + 1, some (.field base _ _) | fuel + 1, some (.index base _)
+  | fuel + 1, some (.subslice base ..) | fuel + 1, some (.downcast base _) =>
+      placeRootLocal? ns base fuel
+
+/-- The locals a loop body can change, each with whether the body only
+writes through it as a reference: those it binds, assigns, or lends
+mutably, since a lender is written back at its borrow's death.  A local
+written through only keeps its loan; every other local keeps its entry
+value through the loop. -/
+private partial def loopBodyLocals (ns : ValidatedNamespace) (id : LeanerIR.ExprId)
+    (found : Array (Nat × Bool) := #[]) : Array (Nat × Bool) :=
+  match ns.expressions[id.index]? with
+  | none => found
+  | some expression =>
+      let rec bound (pattern : LeanerIR.PatternId) : Array (Nat × Bool) :=
+        match ns.patterns[pattern.index]? with
+        | some { kind := .variable localId, .. } => #[(localId.index, false)]
+        | some { kind := .tuple children, .. }
+        | some { kind := .constructor _ _ _ children, .. } => children.flatMap bound
+        | _ => #[]
+      let direct : Array (Nat × Bool) := match expression.kind with
+        | .letDecl pattern _ _ => bound pattern
+        | .assignPattern pattern _ => bound pattern
+        | .assign place _ => (placeRootLocal? ns place).toArray
+        | .operation (.borrow .mutable place) _ _ _ => (placeRootLocal? ns place).toArray
+        | _ => #[]
+      let found := direct.foldl (init := found) fun found (slot, through) =>
+        match found.findIdx? (·.1 == slot) with
+        | some index => found.set! index (slot, found[index]!.2 && through)
+        | none => found.push (slot, through)
+      (LeanerIR.Validation.expressionChildren expression.kind).foldl
+        (fun found child => loopBodyLocals ns child found) found
+
+/-- Whether a loop body touches the global store or the pending set: a
+global operation touches the store, a call may touch both. -/
+private partial def loopBodyEffects (ns : ValidatedNamespace) (id : LeanerIR.ExprId)
+    (found : Bool × Bool := (false, false)) : Bool × Bool :=
+  match ns.expressions[id.index]? with
+  | none => found
+  | some expression =>
+      let found := match expression.kind with
+        | .operation (.global _) _ _ _ => (true, found.2)
+        | .operation (.call _) _ _ _ => (true, true)
+        | _ => found
+      (LeanerIR.Validation.expressionChildren expression.kind).foldl
+        (fun found child => loopBodyEffects ns child found) found
+
+/-- The invariant of each loop of a function, keyed by the loop's site:
+over the entry locals and state, the current locals and state. -/
 def loopInvariants (unit : ValidatedUnit) (namespaceId : NamespaceId) (ns : ValidatedNamespace)
     (declaration : LeanerIR.FunctionDecl LeanerIR.Validation.FunctionBody)
     (row : NRow) : TermElabM (Array (Nat × Lean.Expr)) := do
@@ -653,16 +754,27 @@ def loopInvariants (unit : ValidatedUnit) (namespaceId : NamespaceId) (ns : Vali
     | _ => pure ty
   let mut invariants := #[]
   for (site, block) in loopSpecifications ns root do
-    let parameters := declaration.locals.extract 0 declaration.signature.parameters.size
-    let available := (loopHeaderLocals ns root site (parameters.map (·.id))).getD #[]
+    let changed := loopBodyLocals ns site
+    let (storeTouched, pendingTouched) := loopBodyEffects ns site
+    let stateType := mkConst ``LeanerIR.RuntimeState
     let invariant ← withLocalDeclD `entry envType fun entry =>
-      withLocalDeclD `env envType fun env => do
+      withLocalDeclD `initial stateType fun initial =>
+      withLocalDeclD `env envType fun env =>
+      withLocalDeclD `state stateType fun state => do
         let entrySlots ← slotProjections entry row.length
         let slots ← slotProjections env row.length
         let mut frame := #[]
         for (localDecl, index) in declaration.locals.zipIdx do
-          if index < row.length && !localDecl.mutable && available.contains localDecl.id then
-            frame := frame.push (← mkEq slots[index]! entrySlots[index]!)
+          if h : index < row.length then
+            match changed.find? (·.1 == localDecl.id.index), row[index] with
+            | none, _ => frame := frame.push (← mkEq slots[index]! entrySlots[index]!)
+            | some (_, true), .ref referent =>
+                let carrier := mkApp (mkConst ``NTy.carrier) (← quoteNTy referent)
+                let loanOf (slot : Lean.Expr) : MetaM Lean.Expr := do
+                  mkAppM ``Option.map
+                    #[mkAppN (mkConst ``Prod.fst [.zero, .zero]) #[mkConst ``Nat, carrier], slot]
+                frame := frame.push (← mkEq (← loanOf slots[index]!) (← loanOf entrySlots[index]!))
+            | _, _ => pure ()
         let referenced := block.conditions.foldl (fun found condition =>
           if condition.kind == .loopInvariant then referencedLocals ns condition.expression found
           else found) #[]
@@ -685,9 +797,21 @@ def loopInvariants (unit : ValidatedUnit) (namespaceId : NamespaceId) (ns : Vali
                 | none => pure none)
             translateLoopInvariants unit namespaceId ns block locals localTypes
         let authored ← authoredOver 0 #[]
-        let conjunction ← (frame.push authored).foldrM (init := mkConst ``True)
+        -- The state the body leaves alone keeps its entry value, and the
+        -- loan discipline holds from the entry state.
+        let component (name : Name) : MetaM Lean.Expr := do
+          mkEq (← mkAppM name #[state]) (← mkAppM name #[initial])
+        let mut stateFrame : Array Lean.Expr := #[]
+        unless storeTouched do
+          stateFrame := stateFrame.push (← component ``LeanerIR.RuntimeState.globals)
+          stateFrame := stateFrame.push (← component ``LeanerIR.RuntimeState.globalLoans)
+        unless pendingTouched do
+          stateFrame := stateFrame.push (← component ``LeanerIR.RuntimeState.pending)
+        stateFrame := stateFrame.push
+          (← mkAppM ``LeanerIR.SemanticOperations.LoanDiscipline #[initial, state])
+        let conjunction ← ((frame.push authored) ++ stateFrame).foldrM (init := mkConst ``True)
           fun clause rest => mkAppM ``And #[clause, rest]
-        mkLambdaFVars #[entry, env] conjunction
+        mkLambdaFVars #[entry, initial, env, state] conjunction
     invariants := invariants.push (site.index, invariant)
   return invariants
 
@@ -828,6 +952,31 @@ def requireNativeArtifacts (base : Name) : CommandElabM Unit := do
   unless valid do
     throwError m!"`{function}` has an invalid public verification certificate"
 
+/-- Publish the compiled function of a target: its rows, shape, body,
+exports, the function itself, and the kernel certificate of its
+compilation.  Nothing is republished. -/
+private def publishCompiled (segments : Array String) (function : String)
+    (handle : FunctionHandle) (compiled : Function) : TermElabM Unit := do
+  let artifacts := Name.str (pathName segments) function
+  if (← getEnv).contains (artifacts ++ `compiled_eq) then return
+  addAbbrev (artifacts ++ `row) (← quoteRow (compiled.params ++ compiled.locals))
+  addAbbrev (artifacts ++ `params) (← quoteRow compiled.params)
+  addAbbrev (artifacts ++ `locals) (← quoteRow compiled.locals)
+  addAbbrev (artifacts ++ `shape) (← quoteShape compiled.result)
+  addAbbrev (artifacts ++ `body) (← quoteTerm compiled.body)
+  addAbbrev (artifacts ++ `exports) (← quoteExports compiled.exports)
+  addAbbrev (artifacts ++ `compiled)
+    (← quoteFunction compiled (mkConst (artifacts ++ `body)) (mkConst (artifacts ++ `exports)))
+  let lhs := mkAppN (mkConst ``compileFunction)
+    #[mkConst (semanticsName segments), toExpr handle]
+  let rhs := mkAppN (mkConst ``Except.ok [levelZero, levelZero])
+    #[mkConst ``String, mkConst ``Function, mkConst (artifacts ++ `compiled)]
+  addDecl (.thmDecl {
+    name := artifacts ++ `compiled_eq
+    levelParams := []
+    type := ← mkEq lhs rhs
+    value := ← mkEqRefl rhs })
+
 /-- Verify one function through its denotation. -/
 def verifyFunction (reference : Syntax) (segments : Array String) (function : String)
     (script? : Option (TSyntax ``Lean.Parser.Tactic.tacticSeq) := none) :
@@ -881,14 +1030,38 @@ def verifyFunction (reference : Syntax) (segments : Array String) (function : St
     let some calleeName := calleeNs.tables.names[calleeDeclaration.name.index]?
       | throwErrorAt reference "a callee has no name"
     let theoremName := (← getCurrNamespace) ++ typedSemanticsVerifiedName segments calleeName.name
-    unless (← getEnv).contains theoremName do
-      throwErrorAt reference m!"`{function}` calls `{calleeName.name}`, which is not verified; \
-        verify the callee first"
     let handleTerm ← `(term| (⟨⟨$(Syntax.mkNatLit callee.namespaceId.index)⟩,
       ⟨$(Syntax.mkNatLit callee.functionId.index)⟩⟩ : LeanerIR.FunctionHandle))
-    calleePairs := calleePairs.push
-      (← `(term| PProd.mk $handleTerm
-        (PProd.mk $(Syntax.mkStrLit calleeName.name) ($(mkIdent theoremName) prepared))))
+    if (← getEnv).contains theoremName then
+      calleePairs := calleePairs.push
+        (← `(term| PProd.mk $handleTerm
+          (PProd.mk $(Syntax.mkStrLit calleeName.name) ($(mkIdent theoremName) prepared))))
+    else if calleeDeclaration.contract.loc.isSome then
+      throwErrorAt reference m!"`{function}` calls `{calleeName.name}`, which is not verified; \
+        verify the callee first"
+    else
+      -- An unspecified callee is inlined: its compiled body stands for
+      -- its meaning through the agreement theorem.
+      let calleeCompiled ← match compileFunction prepared callee with
+        | .ok compiled => pure compiled
+        | .error reason =>
+            throwErrorAt reference m!"no denotation for the callee `{calleeName.name}`: {reason}"
+      liftTermElabM (publishCompiled segments calleeName.name callee calleeCompiled)
+      let certificate := Name.str (Name.str namespaceName calleeName.name) "compiledSemantics"
+      unless (← getEnv).contains certificate do
+        elabCommand (← `(command|
+          theorem $(rootIdent certificate)
+              {registry : LeanerIR.Validation.SemanticsRegistry}
+              {executable : LeanerIR.Validation.ExecutableUnit}
+              (prepared : LeanerIR.Validation.prepareExecution registry
+                $(mkIdent unitDefinition) = .ok executable) :
+              LeanerIR.Proofs.Denote.compileFunction executable.unit $handleTerm =
+                .ok $(rootIdent (compiledName segments calleeName.name)) := by
+            rw [(LeanerIR.Validation.prepareExecution_unit prepared).trans $(mkIdent semanticsEq)]
+            exact $(rootIdent (compiledEqName segments calleeName.name))))
+      calleePairs := calleePairs.push
+        (← `(term| PProd.mk $handleTerm
+          (PProd.mk $(Syntax.mkStrLit calleeName.name) ($(rootIdent certificate) prepared))))
   let saved ← get
   try
     let invariants ← liftTermElabM <| loopInvariants unit ⟨namespaceIndex⟩ ns declaration
@@ -899,27 +1072,7 @@ def verifyFunction (reference : Syntax) (segments : Array String) (function : St
       liftTermElabM (addAbbrev name invariant)
       loopPairs := loopPairs.push
         (← `(term| ($(Syntax.mkNumLit (toString site)), $(rootIdent name))))
-    liftTermElabM do
-      addAbbrev (artifacts ++ `row) (← quoteRow (compiled.params ++ compiled.locals))
-      addAbbrev (artifacts ++ `params) (← quoteRow compiled.params)
-      addAbbrev (artifacts ++ `locals) (← quoteRow compiled.locals)
-      addAbbrev (artifacts ++ `shape) (← quoteShape compiled.result)
-      addAbbrev (artifacts ++ `body) (← quoteTerm compiled.body)
-      addAbbrev (artifacts ++ `exports) (← quoteExports compiled.exports)
-      addAbbrev (artifacts ++ `compiled)
-        (← quoteFunction compiled (mkConst (artifacts ++ `body)) (mkConst (artifacts ++ `exports)))
-      let lhs := mkAppN (mkConst ``compileFunction)
-        #[mkConst (semanticsName segments), toExpr handle]
-      let rhs := mkAppN (mkConst ``Except.ok [levelZero, levelZero])
-        #[mkConst ``String, mkConst ``Function, mkConst (artifacts ++ `compiled)]
-      let eqName := artifacts ++ `compiled_eq
-      let eqType ← mkEq lhs rhs
-      let eqValue ← mkEqRefl rhs
-      addDecl (.thmDecl {
-        name := eqName
-        levelParams := []
-        type := eqType
-        value := eqValue })
+    liftTermElabM (publishCompiled segments function handle compiled)
     let pattern ← argumentPattern unit declaration compiled.params
     let budget := Syntax.mkNumLit (toString (leaner.verifyHeartbeats.get (← getOptions)))
     let typedCommand ← `(command|

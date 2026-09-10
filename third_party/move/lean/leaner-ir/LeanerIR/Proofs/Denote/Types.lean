@@ -43,6 +43,8 @@ inductive NTy where
   | struct (source : StructHandle) (fields : NRow)
   | enum (source : StructHandle) (names : List String) (rows : NRows)
       (distinct : names.Nodup)
+  /-- A growable vector of one element type. -/
+  | vector (element : NTy)
   /-- A mutable reference: its loan and the current value it owns. -/
   | ref (referent : NTy)
 
@@ -64,7 +66,7 @@ instance : Inhabited NRow := ⟨.nil⟩
 
 /-- Whether a type is a scalar: one whose values a clause compares directly. -/
 def NTy.isScalar : NTy → Bool
-  | .tuple _ | .struct _ _ | .enum _ _ _ _ | .ref _ => false
+  | .tuple _ | .struct _ _ | .enum _ _ _ _ | .vector _ | .ref _ => false
   | _ => true
 
 def NRow.length : NRow → Nat
@@ -114,6 +116,7 @@ mutual
   | .tuple elements => HList elements
   | .struct _ fields => HList fields
   | .enum _ names rows _ => variantCarrier names rows
+  | .vector element => SpecVector element.carrier
   | .ref referent => Nat × referent.carrier
 
 /-- A row of values, one per type.  Not reducible: a row type is a key of
@@ -129,6 +132,11 @@ def variantCarrier : List String → NRows → Type
   | [], .cons _ _ => Empty
   | _ :: names, .cons fields rest => HList fields ⊕ variantCarrier names rest
 end
+
+/-- A bounded vector decides equality by its elements. -/
+instance instDecidableEqSpecVector {α : Type} [DecidableEq α] : DecidableEq (SpecVector α) := fun a b =>
+  if h : a.values = b.values then isTrue (SpecVector.ext h)
+  else isFalse fun equal => h (congrArg SpecVector.values equal)
 
 /-- A certified integer decides equality by its value. -/
 instance {width : IntWidth} {signed : Bool} : DecidableEq (SpecInt width signed) := fun a b =>
@@ -148,6 +156,7 @@ def NTy.decEq : (τ : NTy) → DecidableEq τ.carrier
   | .tuple elements => HList.decEq elements
   | .struct _ fields => HList.decEq fields
   | .enum _ names rows _ => variantCarrier.decEq names rows
+  | .vector element => @instDecidableEqSpecVector _ element.decEq
   | .ref referent => @instDecidableEqProd _ _ inferInstance referent.decEq
 
 def HList.decEq : (row : NRow) → DecidableEq (HList row)
@@ -268,6 +277,7 @@ def NTy.codec : (τ : NTy) → Codec τ.carrier RuntimeValue
   | .tuple elements => Codec.tuple (rowCodec elements)
   | .struct source fields => Codec.nominalRow source none (rowCodec fields)
   | .enum source names rows distinct => variantCodec source names rows (rowCodecs rows) distinct
+  | .vector element => Codec.boundedVector element.codec
   | .ref referent => Codec.mutRef referent.codec
 
 /-- The codec of a row of values. -/
@@ -296,6 +306,8 @@ def NTy.encode (τ : NTy) (value : τ.carrier) : RuntimeValue := τ.codec.encode
     NTy.encode .string value = .string value := rfl
 @[simp] theorem NTy.encode_bytes (value : Array UInt8) :
     NTy.encode .bytes value = .bytes value := rfl
+@[simp] theorem NTy.encode_vector (element : NTy) (value : SpecVector element.carrier) :
+    NTy.encode (.vector element) value = .vector (value.values.map element.codec.encode) := rfl
 
 /-- The runtime row a row of values denotes. -/
 def HList.encode {Γ : NRow} (values : HList Γ) : List RuntimeValue := (rowCodec Γ).encode values
@@ -385,6 +397,9 @@ def NTy.eqb : (τ : NTy) → τ.carrier → τ.carrier → Bool
   | .tuple elements, left, right => rowEqb elements left right
   | .struct _ fields, left, right => rowEqb fields left right
   | .enum _ names rows _, left, right => variantEqb names rows left right
+  | .vector element, left, right =>
+      left.values.size == right.values.size &&
+        (left.values.toList.zip right.values.toList).all fun pair => element.eqb pair.1 pair.2
   | .ref _, _, _ => false
 
 /-- Structural equality of rows, component by component. -/
@@ -413,6 +428,10 @@ end
 @[simp] theorem NTy.eqb_enum (source : StructHandle) (names : List String) (rows : NRows)
     (distinct : names.Nodup) (left right : variantCarrier names rows) :
     NTy.eqb (.enum source names rows distinct) left right = variantEqb names rows left right := rfl
+@[simp] theorem NTy.eqb_vector (element : NTy) (left right : SpecVector element.carrier) :
+    NTy.eqb (.vector element) left right =
+      (left.values.size == right.values.size &&
+        (left.values.toList.zip right.values.toList).all fun pair => element.eqb pair.1 pair.2) := rfl
 @[simp] theorem rowEqb_nil (left right : HList .nil) : rowEqb .nil left right = true := rfl
 @[simp] theorem rowEqb_cons (τ : NTy) (rest : NRow) (left right : HList (.cons τ rest)) :
     rowEqb (.cons τ rest) left right = (τ.eqb left.1 right.1 && rowEqb rest left.2 right.2) := rfl
@@ -653,6 +672,32 @@ theorem IntegerValueFits_signed_succ (n : Nat) (value : Int) :
     IntegerValueFits (.bits (n + 1)) true value ↔
       -(2 : Int) ^ n ≤ value ∧ value ≤ 2 ^ n - 1 := by
   simp [IntegerValueFits, Ty.integerValueFits?, Ty.integerBounds?]
+
+/-- The length of a bounded vector, which fits `u64` by its bound. -/
+def vectorLength {α : Type} (vector : SpecVector α) : SpecInt (.bits 64) false :=
+  ⟨vector.values.size, (IntegerValueFits_unsigned_succ 63 _).mpr
+    ⟨Int.natCast_nonneg _, by have := vector.bounded; omega⟩⟩
+
+@[simp] theorem vectorLength_val {α : Type} (vector : SpecVector α) :
+    (vectorLength vector).val = vector.values.size := rfl
+
+/-- An array as a bounded vector, when its size is below the bound. -/
+def _root_.LeanerIR.SpecVector.ofArray? {α : Type} (values : Array α) : Option (SpecVector α) :=
+  if bounded : values.size < 2 ^ 64 then some ⟨values, bounded⟩ else none
+
+theorem _root_.LeanerIR.SpecVector.ofArray?_eq {α : Type} (values : Array α) :
+    SpecVector.ofArray? values =
+      if bounded : values.size < 2 ^ 64 then some ⟨values, bounded⟩ else none := rfl
+
+/-- A bounded vector with one element replaced; the size is unchanged. -/
+def _root_.LeanerIR.SpecVector.set {α : Type} (vector : SpecVector α) (index : Nat) (value : α) : SpecVector α :=
+  ⟨vector.values.set! index value, by rw [Array.size_set!]; exact vector.bounded⟩
+
+@[simp] theorem _root_.LeanerIR.SpecVector.values_set {α : Type} (vector : SpecVector α) (index : Nat) (value : α) :
+    (vector.set index value).values = vector.values.set! index value := rfl
+
+@[simp] theorem _root_.LeanerIR.SpecVector.values_mk {α : Type} (values : Array α) (bounded : values.size < 2 ^ 64) :
+    (SpecVector.mk values bounded).values = values := rfl
 
 /-- The bounds a range certificate carries, as facts a leaf adds beside it
 rather than rewrites into it: a term's certificate keeps its type. -/
@@ -1273,6 +1318,78 @@ theorem address_decode_address (value : String) :
 theorem signer_decode_signer (value : String) :
     Codec.signer.decode? (.signer value) = some value := rfl
 
+/-- An encoding equation read as a decoding: the runtime value a native
+value encodes to decodes back to it, so a literal encoding names the value. -/
+theorem NTy.decode?_of_encode (τ : NTy) {value : τ.carrier} {raw : RuntimeValue}
+    (encoded : τ.encode value = raw) : τ.codec.decode? raw = some value :=
+  encoded ▸ τ.codec.decode_encode value
+
+/-- The same, once an encoding of a vector has been split element-wise. -/
+theorem NTy.decode?_vector_of_map (τ : NTy) {value : SpecVector τ.carrier} {raw : Array RuntimeValue}
+    (encoded : value.values.map τ.encode = raw) :
+    (NTy.vector τ).codec.decode? (.vector raw) = some value :=
+  NTy.decode?_of_encode (.vector τ) (congrArg RuntimeValue.vector encoded)
+
+/-- An array is the array of its list. -/
+theorem array_eq_of_toList_eq {α : Type} {xs : Array α} {l : List α} (h : xs.toList = l) :
+    xs = l.toArray :=
+  Array.toList_inj.mp (h.trans (List.toList_toArray (as := l)).symm)
+
+@[simp] theorem NTy.codec_vector (element : NTy) :
+    (NTy.vector element).codec = Codec.boundedVector element.codec := rfl
+
+/-- Decoding the elements of a vector one by one, as explicit binds. -/
+def decodeElements? (codec : Codec Native RuntimeValue) : List RuntimeValue → Option (List Native)
+  | [] => some []
+  | value :: values =>
+      (codec.decode? value).bind fun head => (decodeElements? codec values).map fun tail => head :: tail
+
+@[simp] theorem decodeElements?_nil (codec : Codec Native RuntimeValue) :
+    decodeElements? codec [] = some [] := rfl
+@[simp] theorem decodeElements?_cons (codec : Codec Native RuntimeValue) (value : RuntimeValue)
+    (values : List RuntimeValue) :
+    decodeElements? codec (value :: values) =
+      (codec.decode? value).bind fun head =>
+        (decodeElements? codec values).map fun tail => head :: tail := rfl
+
+theorem mapM_eq_decodeElements? (codec : Codec Native RuntimeValue) (values : List RuntimeValue) :
+    values.mapM codec.decode? = decodeElements? codec values := by
+  induction values with
+  | nil => rfl
+  | cons value values ih =>
+      rw [List.mapM_cons, ih, decodeElements?_cons]
+      rcases codec.decode? value with _ | head <;>
+        rcases decodeElements? codec values with _ | tail <;> rfl
+
+/-- Decoding a vector literal: its elements, then the bound. -/
+theorem boundedVector_decode?_vector (codec : Codec Native RuntimeValue) (values : Array RuntimeValue) :
+    (Codec.boundedVector codec).decode? (.vector values) =
+      (decodeElements? codec values.toList).bind fun decoded =>
+        if bounded : decoded.length < 2 ^ 64 then
+          some ⟨decoded.toArray, by simpa only [List.size_toArray] using bounded⟩
+        else none := by
+  show (values.toList.mapM codec.decode? >>= fun decoded => _) = _
+  rw [mapM_eq_decodeElements?]
+  rcases decodeElements? codec values.toList with _ | decoded <;> rfl
+
+theorem toArray_inj_iff {α : Type} (as bs : List α) : as.toArray = bs.toArray ↔ as = bs :=
+  ⟨List.toArray_inj, fun equal => equal ▸ rfl⟩
+
+/-- Certified values are equal exactly when their fields are: a leaf
+compares values, never certificates. -/
+theorem SpecInt.eq_iff_val {width : IntWidth} {signed : Bool} (a b : SpecInt width signed) :
+    a = b ↔ a.val = b.val :=
+  ⟨fun h => h ▸ rfl, SpecInt.ext⟩
+
+theorem SpecVector.eq_iff_values {α : Type} (a b : SpecVector α) : a = b ↔ a.values = b.values :=
+  ⟨fun h => h ▸ rfl, SpecVector.ext⟩
+
+theorem SpecInt.val_ne_of_ne {width : IntWidth} {signed : Bool} {a b : SpecInt width signed}
+    (different : a ≠ b) : a.val ≠ b.val := fun h => different (SpecInt.ext h)
+
+theorem SpecVector.values_ne_of_ne {α : Type} {a b : SpecVector α} (different : a ≠ b) :
+    a.values ≠ b.values := fun h => different (SpecVector.ext h)
+
 /-- A frontier never equals itself advanced. -/
 @[simp] theorem nat_self_eq_add_iff (n m : Nat) : (n = n + m) ↔ m = 0 := by omega
 @[simp] theorem nat_add_eq_self_iff (n m : Nat) : (n + m = n) ↔ m = 0 := by omega
@@ -1378,5 +1495,270 @@ theorem LoanDiscipline_of_same_registry {initial final : RuntimeState}
     (frontier : initial.nextLoan ≤ final.nextLoan) :
     LeanerIR.SemanticOperations.LoanDiscipline initial final :=
   LeanerIR.SemanticOperations.LoanDiscipline.of_eq registry frontier
+
+/-! ## Tightness of the codecs -/
+
+/-- A codec is tight when a runtime value that decodes is the encoding of
+the value it decodes to: decoding and encoding are inverse on the image. -/
+def _root_.LeanerIR.Proofs.Codec.Tight {Native Runtime : Type} (codec : Codec Native Runtime) : Prop :=
+  ∀ raw value, codec.decode? raw = some value → codec.encode value = raw
+
+theorem specInt_tight (width : IntWidth) (signed : Bool) : (Codec.specInt width signed).Tight := by
+  intro raw value h
+  cases raw <;> simp only [Codec.specInt, decodeInt?, reduceCtorEq] at h
+  split at h
+  · cases h; rfl
+  · cases h
+
+theorem bool_tight : Codec.bool.Tight := by
+  intro raw value h; cases raw <;> simp only [Codec.bool, decodeBool?, reduceCtorEq] at h; cases h; rfl
+theorem string_tight : Codec.string.Tight := by
+  intro raw value h; cases raw <;> simp only [Codec.string, decodeString?, reduceCtorEq] at h; cases h; rfl
+theorem address_tight : Codec.address.Tight := by
+  intro raw value h; cases raw <;> simp only [Codec.address, decodeAddress?, reduceCtorEq] at h; cases h; rfl
+theorem signer_tight : Codec.signer.Tight := by
+  intro raw value h; cases raw <;> simp only [Codec.signer, decodeSigner?, reduceCtorEq] at h; cases h; rfl
+theorem bytes_tight : Codec.bytes.Tight := by
+  intro raw value h; cases raw <;> simp only [Codec.bytes, decodeBytes?, reduceCtorEq] at h; cases h; rfl
+theorem unit_tight : Codec.unit.Tight := by
+  intro raw value h; cases raw <;> simp only [Codec.unit, decodeUnit?, reduceCtorEq] at h; rfl
+
+theorem tupleNil_tight : Codec.tupleNil.Tight := by
+  intro raw value h
+  cases raw <;> simp only [Codec.tupleNil, reduceCtorEq] at h
+  rfl
+
+theorem tupleCons_tight {Head Tail : Type} {head : Codec Head RuntimeValue}
+    {tail : Codec Tail (List RuntimeValue)} (headTight : head.Tight) (tailTight : tail.Tight) :
+    (Codec.tupleCons head tail).Tight := by
+  intro raw value h
+  cases raw with
+  | nil => simp [Codec.tupleCons] at h
+  | cons first rest =>
+      simp only [Codec.tupleCons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq] at h
+      obtain ⟨dh, hh, dt, ht, rfl⟩ := h
+      simp only [Codec.tupleCons, headTight first dh hh, tailTight rest dt ht]
+
+theorem tuple_tight {Native : Type} {row : Codec Native (List RuntimeValue)} (rowTight : row.Tight) :
+    (Codec.tuple row).Tight := by
+  intro raw value h
+  cases raw <;> simp only [Codec.tuple, reduceCtorEq] at h
+  simp only [Codec.tuple, rowTight _ _ h, Array.toArray_toList]
+
+theorem nominalRow_tight {Native : Type} (source : StructHandle) (variant : Option String)
+    {row : Codec Native (List RuntimeValue)} (rowTight : row.Tight) :
+    (Codec.nominalRow source variant row).Tight := by
+  intro raw value h
+  cases raw <;> simp only [Codec.nominalRow, reduceCtorEq] at h
+  split at h
+  · rename_i equal
+    obtain ⟨rfl, rfl⟩ := equal
+    simp only [Codec.nominalRow, rowTight _ _ h, Array.toArray_toList]
+  · cases h
+
+theorem mutRef_tight {Native : Type} {codec : Codec Native RuntimeValue} (tight : codec.Tight) :
+    (Codec.mutRef codec).Tight := by
+  intro raw value h
+  cases raw <;> simp only [Codec.mutRef, reduceCtorEq, Option.map_eq_some_iff] at h
+  obtain ⟨decoded, hd, rfl⟩ := h
+  simp only [Codec.mutRef, tight _ _ hd]
+
+theorem decodeElements?_tight {Native : Type} {codec : Codec Native RuntimeValue} (tight : codec.Tight) :
+    ∀ (values : List RuntimeValue) (decoded : List Native),
+      decodeElements? codec values = some decoded → decoded.map codec.encode = values := by
+  intro values
+  induction values with
+  | nil => intro decoded h; simp only [decodeElements?_nil, Option.some.injEq] at h; subst h; rfl
+  | cons value rest ih =>
+      intro decoded h
+      simp only [decodeElements?_cons, Option.bind_eq_some_iff, Option.map_eq_some_iff] at h
+      obtain ⟨head, hh, tail, ht, rfl⟩ := h
+      simp only [List.map_cons, tight _ _ hh, ih tail ht]
+
+theorem boundedVector_tight {Native : Type} {codec : Codec Native RuntimeValue} (tight : codec.Tight) :
+    (Codec.boundedVector codec).Tight := by
+  intro raw value h
+  cases raw
+  case vector values =>
+    rw [boundedVector_decode?_vector] at h
+    simp only [Option.bind_eq_some_iff] at h
+    obtain ⟨decoded, hd, hv⟩ := h
+    split at hv
+    · cases hv
+      simp only [Codec.boundedVector, List.map_toArray, decodeElements?_tight tight _ _ hd,
+        Array.toArray_toList]
+    · cases hv
+  all_goals simp [Codec.boundedVector] at h
+
+/-- Tightness of the row codecs of an enum's variants. -/
+def RowCodecsTight : (rows : NRows) → RowCodecs rows → Prop
+  | .nil, _ => True
+  | .cons _ rest, (codec, codecs) => codec.Tight ∧ RowCodecsTight rest codecs
+
+theorem variantDecode?_tight (source : StructHandle) : (names : List String) → (rows : NRows) →
+    (codecs : RowCodecs rows) → RowCodecsTight rows codecs →
+    ∀ raw value, variantDecode? source names rows codecs raw = some value →
+      variantEncode source names rows codecs value = raw
+  | _, .nil, _, _, _, value, _ => nomatch value
+  | [], .cons _ _, _, _, _, value, _ => nomatch value
+  | name :: names, .cons fields rest, (codec, codecs), ⟨tight, tights⟩, raw, value, h => by
+      unfold variantDecode? at h
+      split at h
+      · rename_i actualSource actualVariant runtimeFields
+        split at h
+        · rename_i equal
+          obtain ⟨rfl, rfl⟩ := equal
+          simp only [Option.map_eq_some_iff] at h
+          obtain ⟨decoded, hd, rfl⟩ := h
+          exact nominalRow_tight _ _ tight _ _ hd
+        · simp only [Option.map_eq_some_iff] at h
+          obtain ⟨decoded, hd, rfl⟩ := h
+          exact variantDecode?_tight source names rest codecs tights _ _ hd
+      · cases h
+
+mutual
+theorem NTy.codec_tight : (τ : NTy) → τ.codec.Tight
+  | .unit => unit_tight
+  | .bool => bool_tight
+  | .int width signed => specInt_tight (.bits width) signed
+  | .address => address_tight
+  | .signer => signer_tight
+  | .string => string_tight
+  | .bytes => bytes_tight
+  | .tuple elements => tuple_tight (rowCodec_tight elements)
+  | .struct source fields => nominalRow_tight source none (rowCodec_tight fields)
+  | .enum source names rows _ => fun raw value h =>
+      variantDecode?_tight source names rows (rowCodecs rows) (rowCodecs_tight rows) raw value h
+  | .vector element => boundedVector_tight (NTy.codec_tight element)
+  | .ref referent => mutRef_tight (NTy.codec_tight referent)
+
+theorem rowCodec_tight : (row : NRow) → (rowCodec row).Tight
+  | .nil => tupleNil_tight
+  | .cons τ rest => tupleCons_tight (NTy.codec_tight τ) (rowCodec_tight rest)
+
+theorem rowCodecs_tight : (rows : NRows) → RowCodecsTight rows (rowCodecs rows)
+  | .nil => trivial
+  | .cons fields rest => ⟨rowCodec_tight fields, rowCodecs_tight rest⟩
+end
+
+/-- An encoding equation is a decoding equation: the codecs are tight. -/
+theorem NTy.encode_eq_iff (τ : NTy) (value : τ.carrier) (raw : RuntimeValue) :
+    τ.encode value = raw ↔ τ.codec.decode? raw = some value :=
+  ⟨τ.decode?_of_encode, τ.codec_tight raw value⟩
+
+
+/-! ## Structural equality decides equality -/
+
+mutual
+/-- Whether a type holds no reference: structural equality of its values
+then decides their equality. -/
+def NTy.refFree : NTy → Bool
+  | .ref _ => false
+  | .tuple elements => elements.refFree
+  | .struct _ fields => fields.refFree
+  | .enum _ _ rows _ => rows.refFree
+  | .vector element => element.refFree
+  | _ => true
+
+def NRow.refFree : NRow → Bool
+  | .nil => true
+  | .cons τ rest => τ.refFree && rest.refFree
+
+def NRows.refFree : NRows → Bool
+  | .nil => true
+  | .cons fields rest => fields.refFree && rest.refFree
+end
+
+theorem eqb_zip_iff {α : Type} (eqb : α → α → Bool) (sound : ∀ a b, eqb a b = true ↔ a = b) :
+    ∀ (l r : List α), ((l.length == r.length) && (l.zip r).all fun p => eqb p.1 p.2) = true ↔ l = r
+  | [], [] => by simp
+  | [], _ :: _ => by simp
+  | _ :: _, [] => by simp
+  | a :: l, b :: r => by
+      have ih := eqb_zip_iff eqb sound l r
+      simp only [List.length_cons, List.zip_cons_cons, List.all_cons, Bool.and_eq_true, beq_iff_eq,
+        Nat.add_right_cancel_iff, List.cons.injEq, sound] at ih ⊢
+      constructor
+      · rintro ⟨hlen, hab, hall⟩
+        exact ⟨hab, ih.mp ⟨hlen, hall⟩⟩
+      · rintro ⟨rfl, rfl⟩
+        exact ⟨rfl, rfl, (ih.mpr rfl).2⟩
+
+mutual
+theorem NTy.eqb_iff : (τ : NTy) → τ.refFree = true → ∀ l r : τ.carrier, τ.eqb l r = true ↔ l = r
+  | .unit, _, l, r => by simp [NTy.eqb]
+  | .bool, _, l, r => by simp [NTy.eqb]
+  | .int width signed, _, l, r => by
+      simp only [NTy.eqb, decide_eq_true_eq]
+      exact ⟨fun h => SpecInt.ext h, fun h => h ▸ rfl⟩
+  | .address, _, l, r => by simp [NTy.eqb]
+  | .signer, _, l, r => by simp [NTy.eqb]
+  | .string, _, l, r => by simp [NTy.eqb]
+  | .bytes, _, l, r => by simp [NTy.eqb]
+  | .tuple elements, free, l, r => rowEqb_iff elements free l r
+  | .struct _ fields, free, l, r => rowEqb_iff fields free l r
+  | .enum _ names rows _, free, l, r => variantEqb_iff names rows free l r
+  | .vector element, free, l, r => by
+      rw [NTy.eqb_vector]
+      have sound := NTy.eqb_iff element free
+      constructor
+      · intro h
+        have := (eqb_zip_iff element.eqb sound l.values.toList r.values.toList).mp (by
+          simpa only [Array.length_toList] using h)
+        exact SpecVector.ext (Array.toList_inj.mp this)
+      · rintro rfl
+        simpa only [Array.length_toList] using
+          (eqb_zip_iff element.eqb sound l.values.toList l.values.toList).mpr rfl
+  | .ref _, free, _, _ => by simp [NTy.refFree] at free
+
+theorem rowEqb_iff : (row : NRow) → row.refFree = true → ∀ l r : HList row, rowEqb row l r = true ↔ l = r
+  | .nil, _, l, r => by
+      cases l; cases r; simp [rowEqb]
+  | .cons τ rest, free, l, r => by
+      simp only [NRow.refFree, Bool.and_eq_true] at free
+      obtain ⟨l1, l2⟩ := l
+      obtain ⟨r1, r2⟩ := r
+      simp only [rowEqb, Bool.and_eq_true, NTy.eqb_iff τ free.1, rowEqb_iff rest free.2]
+      constructor
+      · rintro ⟨rfl, rfl⟩; rfl
+      · intro h; injection h with a b; exact ⟨a, b⟩
+
+theorem variantEqb_iff : (names : List String) → (rows : NRows) → rows.refFree = true →
+    ∀ l r : variantCarrier names rows, variantEqb names rows l r = true ↔ l = r
+  | _, .nil, _, l, _ => nomatch l
+  | [], .cons _ _, _, l, _ => nomatch l
+  | _ :: names, .cons fields rest, free, l, r => by
+      simp only [NRows.refFree, Bool.and_eq_true] at free
+      cases l <;> cases r <;>
+        simp only [variantEqb, rowEqb_iff fields free.1, variantEqb_iff names rest free.2,
+          Bool.false_eq_true, reduceCtorEq] <;>
+        (constructor <;> intro h) <;> first | (subst h; rfl) | (injection h)
+end
+
+
+/-- Structural equality of vectors over a reference-free element type
+decides equality; a spec literal then meets a symbolic vector as a
+decoding. -/
+theorem NTy.eqb_vector_decide (element : NTy) (free : element.refFree = true)
+    (left right : SpecVector element.carrier) :
+    NTy.eqb (.vector element) left right =
+      @decide (left = right) (NTy.decEq (.vector element) left right) := by
+  have := NTy.eqb_iff (.vector element) free left right
+  by_cases equal : left = right
+  · rw [@decide_eq_true _ (NTy.decEq (.vector element) left right) equal]; exact this.mpr equal
+  · rw [@decide_eq_false _ (NTy.decEq (.vector element) left right) equal]
+    exact Bool.eq_false_iff.mpr (fun h => equal (this.mp h))
+
+/-- A value that does not encode to a runtime value is not what it decodes to. -/
+theorem NTy.decode?_ne_of_encode_ne (τ : NTy) {value : τ.carrier} {raw : RuntimeValue}
+    (different : τ.encode value ≠ raw) : τ.codec.decode? raw ≠ some value :=
+  fun decoded => different (τ.codec_tight raw value decoded)
+
+theorem NTy.decode?_vector_ne_of_map_ne (τ : NTy) {value : SpecVector τ.carrier}
+    {raw : Array RuntimeValue} (different : value.values.map τ.codec.encode ≠ raw) :
+    (NTy.vector τ).codec.decode? (.vector raw) ≠ some value :=
+  fun decoded => different (RuntimeValue.vector.inj ((NTy.vector τ).codec_tight (.vector raw) value decoded))
+
 
 end LeanerIR.Proofs.Denote

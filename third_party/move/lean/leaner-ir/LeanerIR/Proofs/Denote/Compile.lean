@@ -45,6 +45,7 @@ def ntyOfFuel (unit : ValidatedUnit) : Nat → NamespaceId → TypeId → Option
           | .mutable => .ref <$> ntyOfFuel unit fuel namespaceId reference.referent
       | .tuple elements =>
           (.tuple ∘ NRow.ofList) <$> elements.toList.mapM (ntyOfFuel unit fuel namespaceId)
+      | .vector element none => .vector <$> ntyOfFuel unit fuel namespaceId element
       | .nominal name arguments => do
           unless arguments.isEmpty do none
           let handle ← resolveNominal? unit ns name
@@ -230,6 +231,7 @@ def Proj.append : {τ σ υ : NTy} → Proj τ σ → Proj σ υ → Proj τ υ
   | _, _, _, .nil, rest => rest
   | _, _, _, .deref path, rest => .deref (path.append rest)
   | _, _, _, .field x path, rest => .field x (path.append rest)
+  | _, _, _, .index position path, rest => .index position (path.append rest)
 
 /-- The typed place a place names. -/
 def compilePlace (unit : ValidatedUnit) (Γ : NRow) (ns : ValidatedNamespace) :
@@ -260,6 +262,21 @@ def compilePlace (unit : ValidatedUnit) (Γ : NRow) (ns : ValidatedNamespace) :
                 | .error "a field place is out of range"
               .ok ⟨root, σ, x, path.append (.field position .nil)⟩
           | _, _ => notCarried "a field place on a non-struct"
+      | .index base indexExpr =>
+          let ⟨root, component, x, path⟩ ← compilePlace unit Γ ns fuel base
+          let some form := placeIndexForm? ns indexExpr
+            | notCarried "an element place with this index form"
+          let position ← match form with
+            | .literal value =>
+                if value < 0 then notCarried "a negative element index"
+                else .ok (PlaceIndex.literal value.toNat)
+            | .local localId | .copyLocal localId => .ok (PlaceIndex.slot localId.index)
+            | .fromEnd source offset =>
+                if source == base then .ok (PlaceIndex.fromEnd offset)
+                else notCarried "an element index from the end of another place"
+          match component, path with
+          | .vector σ, path => .ok ⟨root, σ, x, path.append (.index position .nil)⟩
+          | _, _ => notCarried "an element place on a non-vector"
       | _ => notCarried "a place of this kind"
 
 /-- The role of a mutable borrow site: passed straight to a callee, whose
@@ -591,6 +608,7 @@ mutual
     | fuel + 1, τ, .primitive primitive, arguments =>
         compilePrimitive unit function roles ρ Γ ns namespaceId fuel τ primitive arguments
     | fuel + 1, τ, .copy place, [] => compileRead unit Γ ns fuel τ place
+    | fuel + 1, τ, .move place, [] => compileRead unit Γ ns fuel τ place
     | fuel + 1, τ, .read place, [] => compileRead unit Γ ns fuel τ place
     | fuel + 1, τ, .borrow .immutable place, [] => compileRead unit Γ ns fuel τ place
     | fuel + 1, .ref referent, .borrow .mutable place, [] => do
@@ -730,6 +748,62 @@ mutual
         match σ, value with
         | .int _ _, value => .ok (.at (.int width' signed') (.cast failure value))
         | _, _ => notCarried "a cast from a non-integer"
+    | fuel + 1, .vector τ, .vector, elements => do
+        let count := elements.length
+        let elements ← compileArgs unit function roles ρ Γ ns namespaceId fuel elements
+          (NRow.replicate count τ)
+        .ok (.at (.vector τ) (.vectorLit count elements))
+    | fuel + 1, .int 64 false, .length, [vector] => do
+        let ⟨σ, vector⟩ := (← compileExpr unit function roles ρ Γ ns namespaceId fuel vector).some
+        match σ, vector with
+        | .vector _, vector => .ok (.at (.int 64 false) (.length vector))
+        | _, _ => notCarried "a length of a non-vector"
+    | fuel + 1, _, .index, [vector, position] => do
+        let ⟨σ, vector⟩ := (← compileExpr unit function roles ρ Γ ns namespaceId fuel vector).some
+        let ⟨π, position⟩ := (← compileExpr unit function roles ρ Γ ns namespaceId fuel position).some
+        match σ, vector with
+        | .vector τ, vector =>
+            match π, position with
+            | .int _ _, position => .ok (.at τ (.index vector position))
+            | _, _ => notCarried "an element read at a non-integer position"
+        | _, _ => notCarried "an element read of a non-vector"
+    | fuel + 1, .unit, .checkVectorIndex failure, [vector, position] => do
+        let ⟨σ, vector⟩ := (← compileExpr unit function roles ρ Γ ns namespaceId fuel vector).some
+        let ⟨π, position⟩ := (← compileExpr unit function roles ρ Γ ns namespaceId fuel position).some
+        match σ, vector with
+        | .vector _, vector =>
+            match π, position with
+            | .int _ _, position => .ok (.at .unit (.checkIndex failure vector position))
+            | _, _ => notCarried "a bounds check at a non-integer position"
+        | _, _ => notCarried "a bounds check of a non-vector"
+    | fuel + 1, _, .pushVector, [vector, element] => do
+        let ⟨σ, vector⟩ := (← compileExpr unit function roles ρ Γ ns namespaceId fuel vector).some
+        match σ, vector with
+        | .vector τ, vector => do
+            let element ← (← compileExpr unit function roles ρ Γ ns namespaceId fuel element).at? τ
+            .ok (.at (.vector τ) (.push vector element))
+        | _, _ => notCarried "a push onto a non-vector"
+    | fuel + 1, _, .insertVector, [vector, position, element] => do
+        let ⟨σ, vector⟩ := (← compileExpr unit function roles ρ Γ ns namespaceId fuel vector).some
+        let ⟨π, position⟩ := (← compileExpr unit function roles ρ Γ ns namespaceId fuel position).some
+        match σ, vector with
+        | .vector τ, vector =>
+            match π, position with
+            | .int _ _, position => do
+                let element ← (← compileExpr unit function roles ρ Γ ns namespaceId fuel element).at? τ
+                .ok (.at (.vector τ) (.insert vector position element))
+            | _, _ => notCarried "an insertion at a non-integer position"
+        | _, _ => notCarried "an insertion into a non-vector"
+    | fuel + 1, _, .removeVector, [vector, position] => do
+        let ⟨σ, vector⟩ := (← compileExpr unit function roles ρ Γ ns namespaceId fuel vector).some
+        let ⟨π, position⟩ := (← compileExpr unit function roles ρ Γ ns namespaceId fuel position).some
+        match σ, vector with
+        | .vector τ, vector =>
+            match π, position with
+            | .int _ _, position =>
+                .ok (.at (.tuple (.cons τ (.cons (.vector τ) .nil))) (.remove vector position))
+            | _, _ => notCarried "a removal at a non-integer position"
+        | _, _ => notCarried "a removal from a non-vector"
     | _ + 1, _, primitive, _ => notCarried s!"primitive {repr primitive} at this type or arity"
 
   def compileChecked (unit : ValidatedUnit) (function : FunctionHandle) (roles : Array (ExprId × LoanRole))

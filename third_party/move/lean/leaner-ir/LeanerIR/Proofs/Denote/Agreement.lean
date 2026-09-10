@@ -37,6 +37,30 @@ axiom compileFunction_agrees (unit : ExecutableUnit) (handle : FunctionHandle)
     (args : HList f.params) :
     Spec.Equiv (f.denote unit args) (typedMeaning unit handle f args)
 
+/-- Equivalent computations have the same weakest precondition. -/
+theorem wp_congr_equiv {σ ε α : Type} {a b : Spec σ ε α} (equiv : Spec.Equiv a b)
+    (ensures : α → σ → Prop) (aborts : ε → Prop) (initial : σ) :
+    wp a ensures aborts initial ↔ wp b ensures aborts initial := by
+  simp only [wp]
+  rw [(equiv.undefined initial)]
+  constructor
+  · rintro ⟨normal, failing, defined⟩
+    exact ⟨fun r f step => normal r f ((equiv.ok _ _ _).mpr step),
+      fun e step => failing e ((equiv.aborts _ _).mpr step), defined⟩
+  · rintro ⟨normal, failing, defined⟩
+    exact ⟨fun r f step => normal r f ((equiv.ok _ _ _).mp step),
+      fun e step => failing e ((equiv.aborts _ _).mp step), defined⟩
+
+/-- A call to a compiled callee reasons over the callee's denotation: an
+unspecified callee is inlined by the agreement theorem, never summarized. -/
+theorem wp_calleeMeaning_of_compiled (unit : ExecutableUnit) (handle : FunctionHandle)
+    (f : Function) (compiled : compileFunction unit.unit handle = .ok f) (values : HList f.params)
+    (ensures : f.result.carrier → RuntimeState → Prop) (aborts : Failure → Prop)
+    (initial : RuntimeState) :
+    wp (calleeMeaning unit handle f.params f.result values) ensures aborts initial ↔
+      wp (f.denote unit values) ensures aborts initial :=
+  (wp_congr_equiv (compileFunction_agrees unit handle f compiled values) ensures aborts initial).symm
+
 /-- A contract established over the denotation holds of the typed
 big-step meaning. -/
 theorem satisfies_typedMeaning (unit : ExecutableUnit) (handle : FunctionHandle)
