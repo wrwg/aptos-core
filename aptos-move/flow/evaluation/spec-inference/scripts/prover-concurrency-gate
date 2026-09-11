@@ -1,0 +1,210 @@
+#!/usr/bin/python3
+"""Cooperatively limit corpus Boogie processes across containers.
+
+Run one gate in every participating container. Each gate observes Boogie in
+its local PID namespace while advisory locks on a container-shared Linux
+filesystem provide the machine-wide slots. Do not put the lock directory on
+the macOS virtiofs share; use the Atlas Docker volume mounted at
+``~/.local/share/atlas``.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import time
+
+
+DEFAULT_MATCH = "/evaluation/spec-inference/evaluation-artifacts/corpus3.2-run"
+DEFAULT_STATE_DIR = Path.home() / ".local/share/atlas/prover-concurrency-gate"
+running = True
+
+
+def stop(*_: object) -> None:
+    global running
+    running = False
+
+
+def emit(log: Path, worker: str, event: str, **fields: object) -> None:
+    record = {
+        "time_ns": time.time_ns(),
+        "worker": worker,
+        "event": event,
+        **fields,
+    }
+    line = (json.dumps(record, sort_keys=True) + "\n").encode()
+    descriptor = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(descriptor, line)
+    finally:
+        os.close(descriptor)
+    print(line.decode().rstrip(), flush=True)
+
+
+def candidates(path_match: str) -> dict[int, dict[str, object]]:
+    found: dict[int, dict[str, object]] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            executable = os.readlink(f"/proc/{pid}/exe")
+            if os.path.basename(executable).lower() != "boogie":
+                continue
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+            if path_match not in cwd:
+                continue
+            pgid = os.getpgid(pid)
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+        found[pgid] = {"pid": pid, "cwd": cwd}
+    return found
+
+
+def acquire_slot(slot_paths: tuple[Path, ...]) -> tuple[int, int] | None:
+    for number, path in enumerate(slot_paths, 1):
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return descriptor, number
+        except BlockingIOError:
+            os.close(descriptor)
+    return None
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--worker", default=socket.gethostname())
+    parser.add_argument("--slots", type=int, default=2)
+    parser.add_argument("--match", default=DEFAULT_MATCH)
+    parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    parser.add_argument("--poll-seconds", type=float, default=0.05)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    if args.slots < 1:
+        raise SystemExit("--slots must be positive")
+    if args.poll_seconds <= 0:
+        raise SystemExit("--poll-seconds must be positive")
+
+    args.state_dir.mkdir(parents=True, exist_ok=True)
+    slot_paths = tuple(
+        args.state_dir / f"slot-{number}.lock"
+        for number in range(1, args.slots + 1)
+    )
+    log = args.state_dir / "events.jsonl"
+    local_lock = Path(f"/tmp/prover-concurrency-gate-{args.slots}.lock")
+    local_descriptor = os.open(local_lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(local_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit("a prover concurrency gate already runs in this container")
+    for path in slot_paths:
+        path.touch(mode=0o600, exist_ok=True)
+    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, stop)
+
+    active: dict[int, tuple[int, int]] = {}
+    waiting: deque[int] = deque()
+    details: dict[int, dict[str, object]] = {}
+    emit(
+        log,
+        args.worker,
+        "gate_start",
+        pid=os.getpid(),
+        slots=args.slots,
+        match=args.match,
+        state_dir=str(args.state_dir.resolve()),
+    )
+    try:
+        while running:
+            current = candidates(args.match)
+            for pgid in list(active):
+                if pgid in current:
+                    continue
+                descriptor, slot = active.pop(pgid)
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
+                details.pop(pgid, None)
+                emit(log, args.worker, "released", process_group=pgid, slot=slot)
+
+            waiting = deque(pgid for pgid in waiting if pgid in current)
+            known = set(active) | set(waiting)
+            for pgid in sorted(current):
+                if pgid in known:
+                    continue
+                details[pgid] = current[pgid]
+                lease = acquire_slot(slot_paths)
+                if lease is not None:
+                    active[pgid] = lease
+                    emit(
+                        log,
+                        args.worker,
+                        "admitted",
+                        process_group=pgid,
+                        slot=lease[1],
+                        **current[pgid],
+                    )
+                    continue
+                try:
+                    os.killpg(pgid, signal.SIGSTOP)
+                except ProcessLookupError:
+                    details.pop(pgid, None)
+                    continue
+                waiting.append(pgid)
+                emit(
+                    log,
+                    args.worker,
+                    "paused",
+                    process_group=pgid,
+                    **current[pgid],
+                )
+
+            while waiting:
+                lease = acquire_slot(slot_paths)
+                if lease is None:
+                    break
+                pgid = waiting.popleft()
+                if pgid not in current:
+                    os.close(lease[0])
+                    details.pop(pgid, None)
+                    continue
+                try:
+                    os.killpg(pgid, signal.SIGCONT)
+                except ProcessLookupError:
+                    os.close(lease[0])
+                    details.pop(pgid, None)
+                    continue
+                active[pgid] = lease
+                emit(
+                    log,
+                    args.worker,
+                    "resumed",
+                    process_group=pgid,
+                    slot=lease[1],
+                    **current[pgid],
+                )
+            time.sleep(args.poll_seconds)
+    finally:
+        for pgid in waiting:
+            try:
+                os.killpg(pgid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+        for descriptor, _ in active.values():
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+        emit(log, args.worker, "gate_stop", pid=os.getpid())
+        os.close(local_descriptor)
+
+
+if __name__ == "__main__":
+    main()
