@@ -86,6 +86,37 @@ class ModelProfileTest(unittest.TestCase):
                 "bb157e504d1d192fdff345d8d67edc3cb44507e92cf6e8435e1f930661b7286c",
             )
 
+    def test_select_terra56_uses_codex_with_high_effort_and_no_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "terra56.json"
+            select_model(
+                ROOT / "config/default.json",
+                output,
+                "terra56",
+                infrastructure_retries=0,
+            )
+            config = ExperimentConfig.load(output)
+            self.assertEqual(config.model, "gpt-5.6-terra")
+            self.assertEqual(config.provider_base_url, "https://chatgpt.com/backend-api")
+            self.assertEqual(config.effort, "high")
+            self.assertEqual(config.agent_runtime, "codex")
+            self.assertEqual(config.infrastructure_retries, 0)
+            self.assertEqual(config.codex_cli_version, "0.153.2")
+            self.assertEqual(
+                config.codex_code_mode_host_sha256,
+                "bb157e504d1d192fdff345d8d67edc3cb44507e92cf6e8435e1f930661b7286c",
+            )
+
+    def test_select_rejects_negative_infrastructure_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "cannot be negative"):
+                select_model(
+                    ROOT / "config/default.json",
+                    Path(directory) / "config.json",
+                    "terra56",
+                    infrastructure_retries=-1,
+                )
+
     def test_effort_validation_preserves_history_and_rejects_glm_xhigh(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"

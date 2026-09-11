@@ -19,39 +19,53 @@ PROFILES = {
     "opus": ("claude-opus-5", "https://api.anthropic.com"),
     "sonnet": ("claude-sonnet-5", "https://api.anthropic.com"),
     "sol56": ("gpt-5.6-sol", "https://chatgpt.com/backend-api"),
+    "terra56": ("gpt-5.6-terra", "https://chatgpt.com/backend-api"),
 }
 SUBSCRIPTION_PROFILES = {PROFILES["opus"], PROFILES["sonnet"]}
+CODEX_PROFILES = {PROFILES["sol56"], PROFILES["terra56"]}
 CODEX_CLI_VERSION = "0.153.2"
 CODEX_CODE_MODE_HOST_SHA256 = "bb157e504d1d192fdff345d8d67edc3cb44507e92cf6e8435e1f930661b7286c"
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def select_model(
-    base: Path, output: Path, model: str, source_commit: str | None = None
+    base: Path,
+    output: Path,
+    model: str,
+    source_commit: str | None = None,
+    infrastructure_retries: int | None = None,
 ) -> None:
+    if infrastructure_retries is not None and infrastructure_retries < 0:
+        raise ValueError("infrastructure retries cannot be negative")
     base_config = ExperimentConfig.load(base)
+    codex_profile = PROFILES[model] in CODEX_PROFILES
     config = replace(
         base_config,
         model=PROFILES[model][0],
         provider_base_url=PROFILES[model][1],
         effort=(
             "xhigh" if model in ("opus", "sonnet") else
-            "high" if model == "sol56" else "max"
+            "high" if codex_profile else "max"
         ),
-        agent_runtime="codex" if model == "sol56" else "claude",
-        codex_cli_version=CODEX_CLI_VERSION if model == "sol56" else None,
+        agent_runtime="codex" if codex_profile else "claude",
+        codex_cli_version=CODEX_CLI_VERSION if codex_profile else None,
         codex_code_mode_host_sha256=(
-            CODEX_CODE_MODE_HOST_SHA256 if model == "sol56" else None
+            CODEX_CODE_MODE_HOST_SHA256 if codex_profile else None
         ),
         source_commit=source_commit or base_config.source_commit,
+        infrastructure_retries=(
+            infrastructure_retries
+            if infrastructure_retries is not None
+            else base_config.infrastructure_retries
+        ),
         allowed_builtin_tools=(
             ["shell", "apply_patch"]
-            if model == "sol56"
+            if codex_profile
             else base_config.allowed_builtin_tools
         ),
         denied_builtin_tools=(
             ["web_search", "agents"]
-            if model == "sol56"
+            if codex_profile
             else base_config.denied_builtin_tools
         ),
     )
@@ -94,7 +108,7 @@ def launch(config_path: Path, command: list[str]) -> None:
     config = ExperimentConfig.load(config_path)
     pair = (config.model, config.provider_base_url)
     if config.agent_runtime == "codex":
-        if pair != PROFILES["sol56"]:
+        if pair not in CODEX_PROFILES:
             raise ValueError("no Codex credential profile for this model/endpoint pair")
         executable = os.environ.get("MOVE_INFERENCE_CODEX_EXECUTABLE") or shutil.which("codex")
         if not executable:
@@ -177,6 +191,7 @@ def main() -> None:
     select.add_argument("--config", type=Path, required=True)
     select.add_argument("--output", type=Path, required=True)
     select.add_argument("--source-commit")
+    select.add_argument("--infrastructure-retries", type=int)
     run = sub.add_parser("exec")
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("command", nargs=argparse.REMAINDER)
@@ -184,7 +199,11 @@ def main() -> None:
     try:
         if args.action == "select":
             select_model(
-                args.config, args.output, args.model, source_commit=args.source_commit
+                args.config,
+                args.output,
+                args.model,
+                source_commit=args.source_commit,
+                infrastructure_retries=args.infrastructure_retries,
             )
         else:
             command = args.command[1:] if args.command[:1] == ["--"] else args.command
