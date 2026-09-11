@@ -25,6 +25,8 @@ from .artifacts import _walk
 CREDENTIAL_VARIABLES = (
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_FOUNDRY_API_KEY",
+    "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
@@ -36,6 +38,19 @@ def require_provider_auth(model: str, endpoint: str) -> None:
     """Fail closed before a real session can select paid API credentials."""
     if os.environ.get("ANTHROPIC_API_KEY"):
         raise ValueError("ANTHROPIC_API_KEY is forbidden for evaluation runs")
+    if os.environ.get("CLAUDE_CODE_USE_FOUNDRY") == "1":
+        resource = os.environ.get("ANTHROPIC_FOUNDRY_RESOURCE")
+        base_url = os.environ.get("ANTHROPIC_FOUNDRY_BASE_URL")
+        if not resource and not base_url:
+            raise ValueError("Foundry requires ANTHROPIC_FOUNDRY_RESOURCE or ANTHROPIC_FOUNDRY_BASE_URL")
+        if not endpoint.endswith(".services.ai.azure.com/anthropic"):
+            raise ValueError("Foundry run config must record its Azure Anthropic endpoint")
+        if not (
+            os.environ.get("ANTHROPIC_FOUNDRY_API_KEY")
+            or os.environ.get("ANTHROPIC_FOUNDRY_AUTH_TOKEN")
+        ):
+            raise ValueError("Foundry credential missing")
+        return
     if model.startswith("claude-") or endpoint == "https://api.anthropic.com":
         if endpoint != "https://api.anthropic.com":
             raise ValueError("Claude subscription requires the Anthropic endpoint")

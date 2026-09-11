@@ -2,6 +2,8 @@
 """Repository-local entry point for the Phase 4 sandbox policy."""
 
 from pathlib import Path
+import os
+import subprocess
 import sys
 
 
@@ -11,4 +13,22 @@ from harness.pilot_sandbox import main  # noqa: E402
 
 
 if __name__ == "__main__":
+    # The dispatcher invokes this wrapper once per cell. Refresh the short-lived
+    # Microsoft Entra token here so a long round never reuses the token captured
+    # when its dispatcher started.
+    if os.environ.get("CLAUDE_CODE_USE_FOUNDRY") == "1" and sys.argv[1:] != ["--preflight"]:
+        token = subprocess.run(
+            [
+                "az", "account", "get-access-token", "--resource",
+                "https://cognitiveservices.azure.com", "--query", "accessToken",
+                "-o", "tsv",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+        if not token:
+            raise SystemExit("Foundry authentication returned an empty access token")
+        os.environ["ANTHROPIC_FOUNDRY_AUTH_TOKEN"] = token
     main()

@@ -100,6 +100,28 @@ class ModelProfileTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "effort must"):
                     ExperimentConfig.load(path)
 
+    def test_opus_accepts_high_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(asdict(replace(self.config, effort="high"))))
+            self.assertEqual(ExperimentConfig.load(path).effort, "high")
+
+    def test_foundry_accepts_only_explicit_foundry_auth(self) -> None:
+        endpoint = "https://aptos-foundry-use2.services.ai.azure.com/anthropic"
+        env = {
+            "CLAUDE_CODE_USE_FOUNDRY": "1",
+            "ANTHROPIC_FOUNDRY_RESOURCE": "aptos-foundry-use2",
+            "ANTHROPIC_FOUNDRY_AUTH_TOKEN": "test-foundry-token",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            require_provider_auth("claude-opus-5", endpoint)
+            self.assertEqual(
+                redact("test-foundry-token"), "[REDACTED]"
+            )
+        with patch.dict(os.environ, {**env, "ANTHROPIC_FOUNDRY_AUTH_TOKEN": ""}, clear=True):
+            with self.assertRaisesRegex(ValueError, "Foundry credential missing"):
+                require_provider_auth("claude-opus-5", endpoint)
+
     def test_missing_subscription_never_falls_back_to_key(self) -> None:
         with self.assertRaisesRegex(ValueError, "subscription token missing"):
             subscription_environment(self.config, {"ANTHROPIC_API_KEY": "test-api"})

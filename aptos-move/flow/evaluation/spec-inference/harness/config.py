@@ -68,13 +68,13 @@ class ExperimentConfig:
                 )
             if config.effort not in ("low", "medium", "high", "xhigh", "max"):
                 raise ValueError("Codex effort must be low, medium, high, xhigh, or max")
-        # Keep historical max-effort Claude configs readable. New Opus and
-        # Sonnet profiles select xhigh; GLM and other profiles retain max.
+        # Keep historical max-effort Claude configs readable. Opus and Sonnet
+        # 5 support an explicit high or xhigh effort; GLM retains max.
         elif config.effort != "max" and not (
             config.model in ("claude-opus-5", "claude-sonnet-5")
-            and config.effort == "xhigh"
+            and config.effort in ("high", "xhigh")
         ):
-            raise ValueError("effort must be max, or xhigh for Opus/Sonnet 5")
+            raise ValueError("effort must be max, or high/xhigh for Opus/Sonnet 5")
         if config.feedback_level not in FEEDBACK_LEVELS:
             raise ValueError(
                 f"feedback_level must be one of {list(FEEDBACK_LEVELS)}"
