@@ -76,7 +76,7 @@ SDK metrics remain available for cost accounting; missing terminal usage is
 not zero usage. The launch report distinguishes queued aborts (`started: false`)
 from in-flight aborts (`started: true`). Neither is a completed evaluation.
 
-## Select GLM, Opus, Sonnet, or Sol 5.6
+## Select GLM, Opus, Sonnet, Sol 5.6, or Terra 5.6
 
 Select the model before screening and scheduling. `--model glm` selects
 GLM 5.3 through Z.ai; `--model opus` selects `claude-opus-5` through Anthropic
@@ -90,6 +90,10 @@ effort. It uses `codex exec --json`, retains the thread across controller
 follow-ups, inlines the immutable rendered `move-inf` skill, and requires the
 generated Move Flow MCP tool allowlist.
 
+`--model terra56` selects `gpt-5.6-terra` through the same Codex path with
+`high` reasoning effort. Pass `--infrastructure-retries 0` when preparing a
+round that must not retry genuine infrastructure failures.
+
 ```text
 .venv/bin/python -m harness.model_profile select --model opus \
   --config evaluation-artifacts/corpus3.2-run1/config.json \
@@ -102,7 +106,7 @@ and set `MOVE_INFERENCE_CLAUDE_TOKEN_FILE` to that path. The sandbox passes
 subscription OAuth through and redacts it from artifacts. An API key is not
 used as a fallback for the subscription profile.
 
-For Sol 5.6, run `codex login`. The launcher copies the saved `auth.json` into
+For Sol 5.6 or Terra 5.6, run `codex login`. The launcher copies the saved `auth.json` into
 the private per-cell sandbox home and removes it with that staging directory;
 set `MOVE_INFERENCE_CODEX_AUTH_FILE` only when the login is stored elsewhere.
 
