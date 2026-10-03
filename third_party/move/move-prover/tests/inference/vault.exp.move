@@ -5,7 +5,7 @@ error: WP cannot complete `vault::harvest` while a transparent callee lacks a co
   = transparent callee `0x1::fungible_asset::balance` is outside the editable WP scope and has no complete opaque contract; WP cannot construct a complete caller specification. The package or corpus must provide and verify a complete opaque contract for that callee before the caller is rerun
   = transparent callee `0x1::fungible_asset::deposit` is outside the editable WP scope and has no complete opaque contract; WP cannot construct a complete caller specification. The package or corpus must provide and verify a complete opaque contract for that callee before the caller is rerun
   = transparent callee `0x1::fungible_asset::withdraw` is outside the editable WP scope and has no complete opaque contract; WP cannot construct a complete caller specification. The package or corpus must provide and verify a complete opaque contract for that callee before the caller is rerun
-  = an emitted abort condition is flagged `vacuous` or `sathard`
+  = an emitted abort condition is `vacuous` or relies on a `result_of` which is not related to the callee's actual result
    ┌─ tests/inference/vault.move:21:5
    │
 21 │ ╭     public fun harvest(caller: &signer, vault_obj: Object<Vault>) {

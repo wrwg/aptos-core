@@ -2198,11 +2198,13 @@ fn update_spec<'env>(
             .iter()
             .filter(|e| !is_trivial_false(e) && (!is_trivial_true(e) || !state.is_normal_return))
             .collect();
+        // A clause WP cannot justify leaves the contract partial. A clause
+        // which holds but is expensive for the solver (`sathard` for its
+        // top-level quantifier) is exact and does not.
         let has_flagged_abort = aborts_conds.iter().any(|exp| {
             has_unconstrained_quant_var(exp)
                 || havoc_unreliable
                 || solver_hard_summary
-                || has_top_level_quantifier(exp)
                 || has_untrusted_transparent_result_of(env, exp)
         });
         // A loop invariant can retain `!aborts_of<dynamic_closure>(...)` in an
@@ -2273,7 +2275,9 @@ fn update_spec<'env>(
             }
             if has_flagged_abort {
                 partial_abort_reasons.push(
-                    "an emitted abort condition is flagged `vacuous` or `sathard`".to_owned(),
+                    "an emitted abort condition is `vacuous` or relies on a `result_of` which is \
+                     not related to the callee's actual result"
+                        .to_owned(),
                 );
             }
             if dropped_uninformative_abort {
@@ -3896,8 +3900,8 @@ fn has_top_level_quantifier(exp: &Exp) -> bool {
 /// generated carrier is not related to that runtime result and cannot justify
 /// a caller postcondition such as `result == result_of<f>(args)`.
 ///
-/// Such clauses are retained for inspection but marked `sathard`, allowing the
-/// deterministic compatibility refinement to remove only the unusable clause.
+/// Such clauses are retained for inspection but marked `sathard`; an abort
+/// clause relying on one leaves the contract partial.
 fn has_untrusted_transparent_result_of(env: &GlobalEnv, exp: &Exp) -> bool {
     exp.as_ref().any(&mut |node| {
         let ExpData::Call(_, AstOp::Behavior(move_model::ast::BehaviorKind::ResultOf, _), args) =

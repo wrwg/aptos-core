@@ -33,7 +33,7 @@ module 0x42::find_closure {
 /*
 Inference diagnostics:
 warning: WP could not characterize the aborts of `find_closure::find` exactly, so its emitted `aborts_if` clauses are a lower bound and the specification carries `aborts_if_is_partial`. Complete the abort behavior and remove that pragma before relying on the contract. Reasons:
-  = an emitted abort condition is flagged `vacuous` or `sathard`
+  = an emitted abort condition is `vacuous` or relies on a `result_of` which is not related to the callee's actual result
    ┌─ tests/inference/find_closure.move:9:5
    │
  9 │ ╭     public fun find<T>(v: &vector<T>, pred: |&T|bool has copy + drop): u64 {
