@@ -1299,6 +1299,15 @@ fn mark_transparent_result_dependencies_solver_hard(env: &GlobalEnv) {
     }
 }
 
+/// Whether an inferred condition relies on a `result_of` carrier for a
+/// transparent Move function. The carrier is the concrete result witness for
+/// an opaque call summarized by the behavioral-predicate backend. For a
+/// transparent call the prover executes the body instead, so an independently
+/// generated carrier is not related to that runtime result and cannot justify
+/// a caller postcondition such as `result == result_of<f>(args)`.
+///
+/// Such clauses are retained for inspection but marked `sathard`; an abort
+/// clause relying on one leaves the contract partial.
 fn condition_depends_on_transparent_result(env: &GlobalEnv, exp: &Exp) -> bool {
     let mut found = false;
     exp.visit_pre_order(&mut |node| {
@@ -1950,7 +1959,7 @@ fn update_spec<'env>(
         let is_sathard = !is_vacuous
             && (solver_hard_summary
                 || has_top_level_quantifier(exp)
-                || has_untrusted_transparent_result_of(env, exp));
+                || condition_depends_on_transparent_result(env, exp));
         let inferred_value = if is_vacuous {
             PropertyValue::Symbol(vacuous_sym)
         } else if is_sathard {
@@ -2205,7 +2214,7 @@ fn update_spec<'env>(
             has_unconstrained_quant_var(exp)
                 || havoc_unreliable
                 || solver_hard_summary
-                || has_untrusted_transparent_result_of(env, exp)
+                || condition_depends_on_transparent_result(env, exp)
         });
         // A loop invariant can retain `!aborts_of<dynamic_closure>(...)` in an
         // ensures summary after the loop transfer has lost the call's own
@@ -3891,36 +3900,6 @@ fn has_top_level_quantifier(exp: &Exp) -> bool {
         },
         _ => false,
     }
-}
-
-/// Whether an inferred condition relies on a `result_of` carrier for a
-/// transparent Move function. The carrier is the concrete result witness for
-/// an opaque call summarized by the behavioral-predicate backend. For a
-/// transparent call the prover executes the body instead, so an independently
-/// generated carrier is not related to that runtime result and cannot justify
-/// a caller postcondition such as `result == result_of<f>(args)`.
-///
-/// Such clauses are retained for inspection but marked `sathard`; an abort
-/// clause relying on one leaves the contract partial.
-fn has_untrusted_transparent_result_of(env: &GlobalEnv, exp: &Exp) -> bool {
-    exp.as_ref().any(&mut |node| {
-        let ExpData::Call(_, AstOp::Behavior(move_model::ast::BehaviorKind::ResultOf, _), args) =
-            node
-        else {
-            return false;
-        };
-        let Some(target) = args.first() else {
-            return true;
-        };
-        let ExpData::Call(_, AstOp::Closure(module_id, fun_id, _), _) = target.as_ref() else {
-            return true;
-        };
-        let callee = env.get_function((*module_id).qualified(*fun_id));
-        // Opacity is what makes the carrier the call's result witness; a
-        // `verify = false` opaque callee is a stated boundary whose contract
-        // the caller consumes like any other.
-        !callee.is_opaque()
-    })
 }
 
 /// Check if a quantified variable `sym` is constrained by co-occurring with at least one

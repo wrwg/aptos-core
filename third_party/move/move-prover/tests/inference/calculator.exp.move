@@ -33,7 +33,7 @@ module 0x66::calculator {
         use 0x1::signer;
         pragma opaque = true;
         modifies State[signer::address_of(s)];
-        ensures [inferred = sathard] (old(State[signer::address_of(s)]) is Continuation) && (input is Number) ==> {
+        ensures [inferred] (old(State[signer::address_of(s)]) is Continuation) && (input is Number) ==> {
             let a = signer::address_of(s);
             let b = State::Value(S1.. |~ result_of<old(State[signer::address_of(s)]).Continuation.0>(input.0));
             S1.. |~ publish<State>(a, b)

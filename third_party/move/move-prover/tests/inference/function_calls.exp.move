@@ -54,7 +54,7 @@ module 0x42::function_calls {
     }
     spec apply(f: |u64|u64, x: u64): u64 {
         pragma opaque = true;
-        ensures [inferred = sathard] result == result_of<f>(x);
+        ensures [inferred] result == result_of<f>(x);
         aborts_if [inferred] aborts_of<f>(x);
     }
 
