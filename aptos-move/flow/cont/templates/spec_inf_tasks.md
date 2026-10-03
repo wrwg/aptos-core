@@ -39,16 +39,19 @@ Check the generated clauses directly; change them only to address a diagnostic.
 
 Follow this order:
 
-1. **Run WP over the requested scope**, including loops, with the requested
-   output location.
-2. **Handle its diagnostics** as described under **WP tool**. Repair missing
-   loop invariants one function at a time and rerun WP. Retain inherited callee
-   partiality; retrying the caller cannot eliminate it.
+1. **Write the loop invariants first.** Before the first WP run, give every
+   loop in the requested scope the invariants its behavior needs: bounds, the
+   processed prefix, accumulated values, and the state it leaves unchanged.
+   WP cannot characterize a loop without them.
+2. **Run WP over the requested scope** with the requested output location.
+3. **Handle its diagnostics** as described under **WP tool**. Strengthen a loop
+   invariant WP still reports one function at a time and rerun WP. Retain
+   inherited callee partiality; retrying the caller cannot eliminate it.
 {% if not args.no_wp_simplification %}
-3. **Simplify what WP derived** while preserving every result, abort, and frame
+4. **Simplify what WP derived** while preserving every result, abort, and frame
    obligation. Use the simplification reference below.
 {% endif %}
-{% if args.no_wp_simplification %}3{% else %}4{% endif %}. **Check the candidate.**{% if args.no_wp_simplification %} Check the generated clauses directly.{% endif %}
+{% if args.no_wp_simplification %}4{% else %}5{% endif %}. **Check the candidate.**{% if args.no_wp_simplification %} Check the generated clauses directly.{% endif %}
    Repair a timeout using the proof guidance. A counterexample to unmodified,
    warning-free WP output is a tool bug; report the failing condition.
 {% endif %}

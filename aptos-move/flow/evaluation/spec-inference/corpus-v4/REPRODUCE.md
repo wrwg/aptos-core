@@ -144,8 +144,9 @@ archived one.
 This repeats the published protocol: Terra 5.6 (`gpt-5.6-terra`) through the
 Codex CLI at `high` effort, three arms, four replicates of all 26 tasks (312
 cells), concurrency 3, the ordinary mutant set withheld as a disqualification
-gate and the held-out set used for scoring. A six-task pilot cost about $0.42
-and 3.5 minutes per cell, so a full round is on the order of $130 and six hours.
+gate and the held-out set used for scoring. A full round took about four and a
+half hours and cost about $78 at API-equivalent prices ($2.00 per million input
+tokens, $0.20 cached, $12.00 output), a mean of $0.25 per cell.
 
 **Environment.**
 
