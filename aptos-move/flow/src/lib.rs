@@ -121,7 +121,8 @@ impl FlowCli {
             FlowCommand::Hook(cmd) => hooks::run(cmd, &self.global),
             FlowCommand::Experiment(args) => {
                 let args = args.clone();
-                tokio::task::spawn_blocking(move || experiment::run(&args))
+                let global = self.global.clone();
+                tokio::task::spawn_blocking(move || experiment::run(&args, &global))
                     .await
                     .context("experiment task panicked")?
             },

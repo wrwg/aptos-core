@@ -59,7 +59,7 @@ module 0x42::intrinsic_map {
         use 0x1::simple_map;
         pragma opaque = true;
         ensures [inferred] ensures_of<simple_map::destroy_empty<u64, u64>>(m);
-        aborts_if [inferred] aborts_of<simple_map::destroy_empty<u64, u64>>(m);
+        aborts_if [inferred] simple_map::spec_aborts_destroy_empty<u64, u64>(m);
     }
 
 
@@ -74,7 +74,7 @@ module 0x42::intrinsic_map {
         use 0x1::simple_map;
         pragma opaque = true;
         ensures [inferred] result == simple_map::spec_get<u64, u64>(m, k);
-        aborts_if [inferred] aborts_of<simple_map::borrow<u64, u64>>(m, k);
+        aborts_if [inferred] simple_map::spec_aborts_borrow<u64, u64>(m, k);
     }
 
 }

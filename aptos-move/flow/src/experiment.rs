@@ -23,6 +23,7 @@ use crate::{
         register_move_flow_package_hooks,
         tools::load_sanitized_prover_options,
     },
+    GlobalOpts,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -459,7 +460,7 @@ struct SpecFunctionContract {
     move_function_companion: bool,
 }
 
-pub fn run(args: &ExperimentArgs) -> Result<()> {
+pub fn run(args: &ExperimentArgs, global: &GlobalOpts) -> Result<()> {
     register_move_flow_package_hooks();
     move_compiler_v2::logging::setup_logging(None);
     match &args.command {
@@ -468,7 +469,9 @@ pub fn run(args: &ExperimentArgs) -> Result<()> {
         ExperimentCommand::CompareImplementation(args) => compare_implementation(args),
         ExperimentCommand::CheckPackage(args) => check_package(args),
         ExperimentCommand::ContractReport(args) => contract_report(args),
-        ExperimentCommand::Infer(args) => infer_package(args),
+        ExperimentCommand::Infer(args) => {
+            infer_package(args, global.evaluation_config()?.aborts_if_is_strict)
+        },
         ExperimentCommand::Prove(args) => prove_package(args),
         ExperimentCommand::CheckCandidate(args) => check_candidate(args),
     }
@@ -1492,7 +1495,7 @@ fn is_untrusted_inferred_contract_condition(
         })
 }
 
-fn infer_package(args: &PackageTargetArgs) -> Result<()> {
+fn infer_package(args: &PackageTargetArgs, aborts_if_is_strict: bool) -> Result<()> {
     let filter = prover_filter(&args.target)?;
     let mut env = build_model(&args.package)
         .with_context(|| format!("failed to build `{}`", args.package.display()))?;
@@ -1530,6 +1533,7 @@ fn infer_package(args: &PackageTargetArgs) -> Result<()> {
     // reads as a target WP handled, when WP in fact declined. The screen is the
     // one consumer that must not be able to miss it.
     options.prover.uninvariant_loop_is_error = true;
+    options.prover.aborts_if_is_strict = aborts_if_is_strict;
     options.output_path = if args.dump_bytecode {
         dump_dir.join("output.bpl")
     } else {

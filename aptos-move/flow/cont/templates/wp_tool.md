@@ -34,6 +34,10 @@ Interpret the result per function:
   the caller. If it is outside the editable scope, report the dependency as a
   corpus/package blocker: its owner must provide a complete verified opaque
   contract. Never use this case to justify `aborts_if_is_partial` on the caller.
+- **Write through a reference a callee returns:** when the callee selects the
+  vector element, map entry, or one of several places the reference points
+  to, no contract states that choice, so WP infers nothing for the caller.
+  Write the caller's contract directly from both bodies.
 - **Unmodeled prover intrinsic:** this is a WP tool bug. Intrinsics execute a
   prover builtin rather than their Move body; do not add a source-level spec or
   make them opaque. WP must supply the builtin value, abort, and mutation

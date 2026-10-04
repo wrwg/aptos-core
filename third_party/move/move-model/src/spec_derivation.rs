@@ -26,7 +26,7 @@
 use crate::{
     ast::{
         Condition, ConditionKind, Exp, ExpData, MatchArm, MemoryLabel, MemoryRange, Operation,
-        Pattern, QuantKind, Value, VisitorPosition,
+        Pattern, QuantKind, Spec, Value, VisitorPosition,
     },
     exp_generator::{ExpGenerator, FunExpGenerator, RangeCheckKind},
     exp_rewriter::{strip_all_olds, ExpRewriter, ExpRewriterFunctions, RewriteTarget},
@@ -863,6 +863,26 @@ pub fn functional_result_spec_values(
     env: &GlobalEnv,
     id: QualifiedId<FunId>,
 ) -> BTreeMap<usize, Exp> {
+    result_spec_values(env, id, false)
+}
+
+/// Whether the function's specification determines each of its results as a
+/// value over its pre-state arguments and global memory. Then the behavioral
+/// `result_of` the specification constrains is the call's actual result, even
+/// for a transparent function whose body runs in its place.
+pub fn spec_determines_results(env: &GlobalEnv, id: QualifiedId<FunId>) -> bool {
+    let result_count = env.get_function(id).get_result_type().flatten().len();
+    let determined = result_spec_values(env, id, true);
+    (0..result_count).all(|idx| determined.contains_key(&idx))
+}
+
+/// The results the specification determines, by index: as pure single-state
+/// values, or also reading global memory when `allow_memory`.
+fn result_spec_values(
+    env: &GlobalEnv,
+    id: QualifiedId<FunId>,
+    allow_memory: bool,
+) -> BTreeMap<usize, Exp> {
     use crate::ast::ConditionKind;
 
     let fun = env.get_function(id);
@@ -879,8 +899,8 @@ pub fn functional_result_spec_values(
     let inferred_prop = env
         .symbol_pool()
         .make(crate::pragmas::CONDITION_INFERRED_PROP);
-    fun.get_spec()
-        .conditions
+    let spec = fun.get_spec();
+    spec.conditions
         .iter()
         .filter(|cond| cond.kind == ConditionKind::Ensures)
         .filter(|cond| {
@@ -899,10 +919,27 @@ pub fn functional_result_spec_values(
                     let ExpData::Call(_, Operation::Result(idx), _) = lhs.as_ref() else {
                         return None;
                     };
-                    spec_value_over_prestate(env, rhs, &mut_params).then(|| (*idx, rhs.clone()))
+                    let rhs = inline_pre_state_lets(env, &spec, rhs.clone());
+                    spec_value_over_prestate(env, &rhs, &mut_params, allow_memory)
+                        .then_some((*idx, rhs))
                 })
         })
         .collect()
+}
+
+/// Replaces the spec's pre-state `let` bindings in `exp` by their values. A
+/// later binding can use an earlier one, so they are replaced last to first.
+fn inline_pre_state_lets(env: &GlobalEnv, spec: &Spec, exp: Exp) -> Exp {
+    spec.conditions.iter().rev().fold(exp, |exp, cond| {
+        let ConditionKind::LetPre(symbol, _) = cond.kind else {
+            return exp;
+        };
+        let mut replacer = |_id: NodeId, target: RewriteTarget| match target {
+            RewriteTarget::LocalVar(found) if found == symbol => Some(cond.exp.clone()),
+            _ => None,
+        };
+        ExpRewriter::new(env, &mut replacer).rewrite_exp(exp)
+    })
 }
 
 fn has_functional_result_spec(env: &GlobalEnv, id: QualifiedId<FunId>) -> bool {
@@ -1073,14 +1110,16 @@ pub fn spec_aborts_are_exact(env: &GlobalEnv, fun: QualifiedId<FunId>) -> bool {
     // exact characterization would leave `aborts_of` defaulting to `false`
     // for a function which can abort.
     // An intrinsic's prover model defines its aborts: the bound abort
-    // condition, or none at all.
+    // condition, or none at all; likewise a native the prelude models as
+    // total.
     let intrinsics = env.get_intrinsics();
     let authoritative = fun_env
         .get_spec()
         .filter_kind(ConditionKind::AbortsIf)
         .any(|cond| condition_is_caller_visible(env, cond))
         || intrinsics.get_abort_spec_fun_for_move_fun(&fun).is_some()
-        || intrinsics.is_non_aborting_move_fun(&fun);
+        || intrinsics.is_non_aborting_move_fun(&fun)
+        || well_known::is_non_aborting_prelude_native(&fun_env);
     authoritative && !fun_env.is_pragma_true(ABORTS_IF_IS_PARTIAL_PRAGMA, || false)
 }
 
@@ -1449,7 +1488,12 @@ pub fn mentions_syms_outside_old(exp: &Exp, syms: &BTreeSet<Symbol>) -> bool {
 /// references, no free local variables (e.g. from spec `let` bindings),
 /// and mentions of the given `&mut` parameters only under `old(..)` (a
 /// plain mention denotes the post-state).
-fn spec_value_over_prestate(env: &GlobalEnv, exp: &Exp, mut_params: &BTreeSet<usize>) -> bool {
+fn spec_value_over_prestate(
+    env: &GlobalEnv,
+    exp: &Exp,
+    mut_params: &BTreeSet<usize>,
+    allow_memory: bool,
+) -> bool {
     if !exp.free_vars().is_empty() {
         return false;
     }
@@ -1469,7 +1513,7 @@ fn spec_value_over_prestate(env: &GlobalEnv, exp: &Exp, mut_params: &BTreeSet<us
         }
         ok
     });
-    ok && exps_are_pure_single_state(env, [exp])
+    ok && (allow_memory || exps_are_pure_single_state(env, [exp]))
 }
 
 /// The parameter index a spec expression mentions directly, looking
@@ -3120,6 +3164,10 @@ impl<'env, G: ExpGenerator<'env>> Deriver<'_, G> {
         // A `&mut`-returning intrinsic (`borrow_mut`) yields a place.
         let result_ref = callee.get_result_type().instantiate(type_inst);
         if result_ref.is_mutable_reference() {
+            // Only a vector element is a place of this analysis.
+            if !callee.module_env.is_std_vector() {
+                return Err(Unsupported);
+            }
             let Some((place, _)) = mut_places.first() else {
                 return Err(Unsupported);
             };
@@ -3624,7 +3672,7 @@ impl<'env, G: ExpGenerator<'env>> Deriver<'_, G> {
                     }
                     for (lhs, rhs) in [(&eq_args[0], &eq_args[1]), (&eq_args[1], &eq_args[0])] {
                         if let ExpData::Call(_, Operation::Result(i), _) = lhs.as_ref() {
-                            if spec_value_over_prestate(env, rhs, &mut_params) {
+                            if spec_value_over_prestate(env, rhs, &mut_params, false) {
                                 found.entry(*i).or_insert_with(|| rhs.clone());
                             }
                         }
@@ -3698,7 +3746,7 @@ impl<'env, G: ExpGenerator<'env>> Deriver<'_, G> {
                         // mention of a `&mut` parameter as a dereference).
                         if let Some(idx) = param_mention(lhs) {
                             if mut_params.contains(&idx)
-                                && spec_value_over_prestate(env, rhs, &mut_params)
+                                && spec_value_over_prestate(env, rhs, &mut_params, false)
                             {
                                 whole.entry(idx).or_insert_with(|| rhs.clone());
                             }
@@ -3710,7 +3758,7 @@ impl<'env, G: ExpGenerator<'env>> Deriver<'_, G> {
                         {
                             if let Some(idx) = param_mention(&sel_args[0]) {
                                 if mut_params.contains(&idx)
-                                    && spec_value_over_prestate(env, rhs, &mut_params)
+                                    && spec_value_over_prestate(env, rhs, &mut_params, false)
                                 {
                                     by_field
                                         .entry(idx)

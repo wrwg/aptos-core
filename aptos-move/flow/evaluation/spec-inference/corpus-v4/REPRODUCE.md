@@ -104,7 +104,15 @@ git diff corpus-v4/screening corpus-v4/metadata corpus-v4/manifest.json
 ```
 
 The screening diff should show only `wall_seconds` and the digests of the local
-tools; `passed`, `well_formed`, `reference_proved` and `wp_hard` must match.
+tools; `passed`, `well_formed`, `reference_proved`, `wp_model_gate` and
+`wp_hard` must match.
+
+`wp_model_gate` runs WP with `--aborts-if-is-strict` over the target's module
+in its reference package, with only the target's own contract removed. The
+reference keeps its loop invariants and dependency contracts, so an error there
+is a gap in WP's models (a native, an intrinsic, or a write WP cannot
+characterize exactly), not work left to an arm. Screening fails such a task
+until WP is fixed.
 
 To read a task as the agents received it, with its reference and every mutant
 as a diff, compose it into an untracked directory:
