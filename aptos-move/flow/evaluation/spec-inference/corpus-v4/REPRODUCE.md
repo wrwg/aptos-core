@@ -179,10 +179,14 @@ python3 -m harness.model_profile select --model terra56 --config config/default.
   --output $ROUND/config.json --source-commit $COMMIT
 for arm in agent-only hybrid-guided hybrid-flexible; do
   move-flow plugin $ROUND/plugins/acceptance/${arm//-/_} --inference-tactic $arm \
-    --evaluation-mode --feedback-level acceptance --max-verification-timeout 20 \
-    --flow-source-commit $COMMIT
+    --evaluation-mode --feedback-level acceptance --aborts-if-is-strict \
+    --max-verification-timeout 20 --flow-source-commit $COMMIT
 done
 ```
+
+`--aborts-if-is-strict` makes WP report an abort characterization it cannot
+make exact as an error instead of emitting `aborts_if_is_partial`, which the
+acceptance check rejects anyway.
 
 and write `$ROUND/plugins.json`:
 

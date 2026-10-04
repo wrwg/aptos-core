@@ -2732,11 +2732,13 @@ fn update_spec<'env>(
         }
     }
 
+    let strict_violation = ProverOptions::get(env).aborts_if_is_strict;
     report_partial_aborts(
         fun_env,
         &partial_abort_reasons,
         partial_abort_has_transparent_callee,
         partial_abort_has_unmodeled_intrinsic,
+        strict_violation,
     );
 }
 
@@ -2753,6 +2755,7 @@ fn report_partial_aborts(
     reasons: &[String],
     has_transparent_callee: bool,
     has_unmodeled_intrinsic: bool,
+    strict_violation: bool,
 ) {
     if reasons.is_empty() {
         return;
@@ -2768,6 +2771,12 @@ fn report_partial_aborts(
             "WP cannot complete `{}` while a transparent callee lacks a complete opaque \
              contract. Repair the named callee boundary before changing or rerunning the \
              caller. Reasons:",
+            fun_env.get_full_name_str()
+        )
+    } else if strict_violation {
+        format!(
+            "WP could not characterize the aborts of `{}` exactly, and an exact abort \
+             characterization is required. Resolve the reasons below and rerun WP. Reasons:",
             fun_env.get_full_name_str()
         )
     } else {
@@ -2788,7 +2797,7 @@ fn report_partial_aborts(
     }
     let severity = if has_unmodeled_intrinsic {
         Severity::Bug
-    } else if has_transparent_callee {
+    } else if has_transparent_callee || strict_violation {
         Severity::Error
     } else {
         Severity::Warning

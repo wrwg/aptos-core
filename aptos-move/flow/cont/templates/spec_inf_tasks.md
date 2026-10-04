@@ -25,8 +25,9 @@ contracts. Check one coherent candidate, then refine the rejected parts.
 
 `{{ tool(name="move_package_wp") }}` is available as an inference pass. Decide
 whether and when to use it alongside direct reasoning and invariant synthesis.
-It runs on any scope, loops included. Interpret its result using **WP tool**
-below.
+It runs on any scope, but it characterizes a loop only once the loop carries
+invariants: without them it covers loop-free code only and reports each loop
+which needs one. Interpret its result using **WP tool** below.
 {% if not args.no_wp_simplification %}
 Once the repairable warnings are resolved, simplify as much as the contract
 needs while preserving its meaning, then check the candidate.
@@ -39,19 +40,16 @@ Check the generated clauses directly; change them only to address a diagnostic.
 
 Follow this order:
 
-1. **Write the loop invariants first.** Before the first WP run, give every
-   loop in the requested scope the invariants its behavior needs: bounds, the
-   processed prefix, accumulated values, and the state it leaves unchanged.
-   WP cannot characterize a loop without them.
-2. **Run WP over the requested scope** with the requested output location.
-3. **Handle its diagnostics** as described under **WP tool**. Strengthen a loop
-   invariant WP still reports one function at a time and rerun WP. Retain
-   inherited callee partiality; retrying the caller cannot eliminate it.
+1. **Run WP over the requested scope**, including loops, with the requested
+   output location.
+2. **Handle its diagnostics** as described under **WP tool**. Repair missing
+   loop invariants one function at a time and rerun WP. Retain inherited callee
+   partiality; retrying the caller cannot eliminate it.
 {% if not args.no_wp_simplification %}
-4. **Simplify what WP derived** while preserving every result, abort, and frame
+3. **Simplify what WP derived** while preserving every result, abort, and frame
    obligation. Use the simplification reference below.
 {% endif %}
-{% if args.no_wp_simplification %}4{% else %}5{% endif %}. **Check the candidate.**{% if args.no_wp_simplification %} Check the generated clauses directly.{% endif %}
+{% if args.no_wp_simplification %}3{% else %}4{% endif %}. **Check the candidate.**{% if args.no_wp_simplification %} Check the generated clauses directly.{% endif %}
    Repair a timeout using the proof guidance. A counterexample to unmodified,
    warning-free WP output is a tool bug; report the failing condition.
 {% endif %}
